@@ -4,13 +4,13 @@ version = "0.1.0"
 authors = ["Benjamin <benjamin.fik.lee@gmail.com>"]
 
 [dependencies]
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b" }
-imgui = { git = "https://github.com/Gekkio/imgui-rs" }
-failure = "0.1.1"
+gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "a435a05" }
 gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory" }
-memoffset = "0.2.1"
+failure = ">= 0.1.1"
+memoffset = ">= 0.2.1"
+imgui = ">= 0.0.20"
 
 [dev-dependencies]
-gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx", rev = "6cb2a800b" }
+gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx", rev = "a435a05" }
 env_logger = "0.5.10"
-winit = "0.15"
+winit = "0.17.2"

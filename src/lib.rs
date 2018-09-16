@@ -6,6 +6,7 @@ extern crate failure;
 #[macro_use]
 extern crate memoffset;
 
+use std::iter;
 use std::mem;
 
 use gfx_memory::{
@@ -99,8 +100,8 @@ impl<B: Backend, T> Buffer<B, T> {
             usage,
         )?;
 
-        let mapped =
-            device.map_memory(buffer.block().memory(), buffer.block().range())?;
+        let mapped = device
+            .map_memory(buffer.block().memory(), buffer.block().range())?;
 
         Ok(Buffer {
             length,
@@ -173,7 +174,7 @@ impl<B: Backend> Renderer<B> {
                     format,
                     image::Tiling::Optimal,
                     image::Usage::SAMPLED | image::Usage::TRANSFER_DST,
-                    image::StorageFlags::empty(),
+                    image::ViewCapabilities::empty(),
                 )?;
 
                 let subresource_range = image::SubresourceRange {
@@ -350,12 +351,12 @@ impl<B: Backend> Renderer<B> {
             let vs_entry = pso::EntryPoint {
                 entry: "main",
                 module: &vs_module,
-                specialization: &[],
+                specialization: pso::Specialization::default(),
             };
             let fs_entry = pso::EntryPoint {
                 entry: "main",
                 module: &fs_module,
-                specialization: &[],
+                specialization: pso::Specialization::default(),
             };
 
             let shader_entries = pso::GraphicsShaderSet {
@@ -426,7 +427,7 @@ impl<B: Backend> Renderer<B> {
             });
 
             // Create pipeline
-            device.create_graphics_pipeline(&pipeline_desc)?
+            device.create_graphics_pipeline(&pipeline_desc, None)?
         };
 
         // Clean up shaders
@@ -516,7 +517,7 @@ impl<B: Backend> Renderer<B> {
         // Bind vertex and index buffers
         pass.bind_vertex_buffers(
             0,
-            pso::VertexBufferSet(vec![(vertex_buffer.buffer.raw(), 0)]),
+            iter::once((vertex_buffer.buffer.raw(), 0)),
         );
         pass.bind_index_buffer(buffer::IndexBufferView {
             buffer: index_buffer.buffer.raw(),
@@ -531,8 +532,8 @@ impl<B: Backend> Renderer<B> {
             rect: pso::Rect {
                 x: 0,
                 y: 0,
-                w: width as u16,
-                h: height as u16,
+                w: width as i16,
+                h: height as i16,
             },
             depth: 0.0..1.0,
         };
@@ -566,10 +567,10 @@ impl<B: Backend> Renderer<B> {
             for cmd in list.cmd_buffer.iter() {
                 // Calculate the scissor
                 let scissor = Rect {
-                    x: cmd.clip_rect.x as u16,
-                    y: cmd.clip_rect.y as u16,
-                    w: (cmd.clip_rect.z - cmd.clip_rect.x) as u16,
-                    h: (cmd.clip_rect.w - cmd.clip_rect.y) as u16,
+                    x: cmd.clip_rect.x as i16,
+                    y: cmd.clip_rect.y as i16,
+                    w: (cmd.clip_rect.z - cmd.clip_rect.x) as i16,
+                    h: (cmd.clip_rect.w - cmd.clip_rect.y) as i16,
                 };
                 pass.set_scissors(0, &[scissor]);
 
