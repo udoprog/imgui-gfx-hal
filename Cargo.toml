@@ -4,13 +4,13 @@ version = "0.1.0"
 authors = ["Benjamin <benjamin.fik.lee@gmail.com>"]
 
 [dependencies]
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "a435a05" }
-gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory" }
+gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "bd7f058efe78d7626a1cc6fbc0c1d3702fb6d2e7" }
+gfx-memory = { git = "https://github.com/gfx-rs/gfx-memory", rev = "1dacf31e26990c9636ba0f566ca8b02bcdd7e503" }
 failure = ">= 0.1.1"
 memoffset = ">= 0.2.1"
 imgui = ">= 0.0.20"
 
 [dev-dependencies]
-gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx", rev = "a435a05" }
+gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx", rev = "bd7f058efe78d7626a1cc6fbc0c1d3702fb6d2e7" }
 env_logger = "0.5.10"
 winit = "0.17.2"

@@ -36,6 +36,12 @@ pub enum Error {
     #[fail(display = "pipeline allocation error")]
     PipelineAllocationError(#[cause] pso::AllocationError),
 
+    #[fail(display = "allocation error")]
+    AllocationError(#[cause] hal::device::AllocationError),
+
+    #[fail(display = "out of memory")]
+    OutOfMemoryError(#[cause] hal::device::OutOfMemory),
+
     #[fail(display = "pipeline creation error")]
     PipelineCreationError(#[cause] pso::CreationError),
 
@@ -61,6 +67,8 @@ impl_from!(Error, FactoryError, Error::FactoryError);
 impl_from!(Error, image::ViewError, Error::ImageViewError);
 impl_from!(Error, hal::error::HostExecutionError, Error::ExecutionError);
 impl_from!(Error, pso::AllocationError, Error::PipelineAllocationError);
+impl_from!(Error, hal::device::AllocationError, Error::AllocationError);
+impl_from!(Error, hal::device::OutOfMemory, Error::OutOfMemoryError);
 impl_from!(Error, pso::CreationError, Error::PipelineCreationError);
 impl_from!(Error, device::ShaderError, Error::ShaderError);
 impl_from!(Error, hal::mapping::Error, Error::MappingError);
@@ -132,11 +140,13 @@ impl<B: Backend, T> Buffer<B, T> {
     }
 
     /// Flush memory changes to syncrhonize
-    fn flush(&self, device: &B::Device) {
+    fn flush(&self, device: &B::Device) -> Result<(), Error> {
         device.flush_mapped_memory_ranges(&[(
             self.buffer.block().memory(),
             self.buffer.block().range(),
-        )]);
+        )])?;
+
+        Ok(())
     }
 }
 
@@ -209,7 +219,7 @@ impl<B: Backend> Renderer<B> {
                         staging_buffer.block().range(),
                     )?;
                     map.clone_from_slice(handle.pixels);
-                    device.release_mapping_writer(map);
+                    device.release_mapping_writer(map)?;
                 }
 
                 // Build a command buffer to copy data
@@ -290,7 +300,7 @@ impl<B: Backend> Renderer<B> {
         let sampler = device.create_sampler(image::SamplerInfo::new(
             image::Filter::Linear,
             image::WrapMode::Clamp,
-        ));
+        ))?;
 
         // Create descriptor set
         let descriptor_set_layout = device.create_descriptor_set_layout(
@@ -302,7 +312,7 @@ impl<B: Backend> Renderer<B> {
                 immutable_samplers: true,
             }],
             Some(&sampler),
-        );
+        )?;
 
         let mut descriptor_pool = device.create_descriptor_pool(
             1,
@@ -310,7 +320,7 @@ impl<B: Backend> Renderer<B> {
                 ty: pso::DescriptorType::CombinedImageSampler,
                 count: 1,
             }],
-        );
+        )?;
 
         let descriptor_set =
             descriptor_pool.allocate_set(&descriptor_set_layout)?;
@@ -334,7 +344,7 @@ impl<B: Backend> Renderer<B> {
             Some(&descriptor_set_layout),
             // 4 is the magic number because there are two 2d vectors
             &[(pso::ShaderStageFlags::VERTEX, 0..4)],
-        );
+        )?;
 
         // Create shaders
         let vs_module = {
@@ -588,8 +598,8 @@ impl<B: Backend> Renderer<B> {
             vertex_offset += list.vtx_buffer.len();
         }
 
-        vertex_buffer.flush(device);
-        index_buffer.flush(device);
+        vertex_buffer.flush(device)?;
+        index_buffer.flush(device)?;
 
         Ok(())
     }
