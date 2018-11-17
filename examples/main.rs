@@ -1,19 +1,17 @@
 extern crate env_logger;
 extern crate gfx_backend_vulkan as back;
 extern crate gfx_hal as hal;
-extern crate gfx_memory;
 extern crate imgui;
 extern crate imgui_gfx_hal;
 extern crate winit;
 
 use std::time::Instant;
 
-use gfx_memory::{MemoryAllocator, SmartAllocator};
 use hal::format::ChannelType;
 use hal::pso::PipelineStage;
 use hal::{
     command, format, image, pass, pool, pso, Backbuffer, Device, FrameSync,
-    Instance, PhysicalDevice, Submission, Surface, Swapchain, SwapchainConfig,
+    Instance, Submission, Surface, Swapchain, SwapchainConfig,
 };
 use imgui::{FrameSize, ImGui};
 
@@ -34,16 +32,18 @@ fn main() {
     let window = winit::Window::new(&events_loop).unwrap();
     let instance = back::Instance::create("imgui-gfx-hal", 1);
     let mut surface = instance.create_surface(&window);
-    let mut adapters = instance.enumerate_adapters();
+    let mut adapters = instance.enumerate_adapters().into_iter();
 
-    let adapter = adapters.remove(1);
-    let properties = adapter.physical_device.memory_properties();
-
-    let (device, mut queue_group) = adapter
-        .open_with::<_, hal::Graphics>(1, |family| {
+    let (adapter, device, mut queue_group) = loop {
+        let adapter = adapters.next().expect("No suitable adapter found");
+        match adapter.open_with::<_, gfx_hal::Graphics>(1, |family| {
             surface.supports_queue_family(family)
-        })
-        .unwrap();
+        }) {
+            Ok((device, queue_group)) => break (adapter, device, queue_group),
+            Err(_) => (),
+        }
+    };
+    let physical_device = &adapter.physical_device;
 
     let mut command_pool = device
         .create_command_pool_typed(
@@ -52,8 +52,6 @@ fn main() {
             16,
         )
         .unwrap();
-
-    let mut allocator = SmartAllocator::new(properties, 4096, 16, 512, 2048);
 
     let (caps, formats, _) = surface.compatibility(&adapter.physical_device);
     let format = formats.map_or(format::Format::Rgba8Srgb, |formats| {
@@ -134,10 +132,10 @@ fn main() {
     let mut renderer = imgui_gfx_hal::Renderer::new(
         &mut imgui,
         &device,
+        physical_device,
         &render_pass,
         &mut command_pool,
         &mut queue_group,
-        &mut allocator,
     )
     .unwrap();
 
@@ -336,7 +334,7 @@ fn main() {
                     ))],
                 );
                 renderer
-                    .render(ui, &mut encoder, &device, &mut allocator)
+                    .render(ui, &mut encoder, &device, &physical_device)
                     .unwrap();
             }
 
@@ -368,6 +366,5 @@ fn main() {
         device.destroy_image_view(rtv);
     }
     device.destroy_swapchain(swap_chain);
-    renderer.destroy(&device, &mut allocator);
-    allocator.dispose(&device).unwrap();
+    renderer.destroy(&device);
 }

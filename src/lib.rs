@@ -1,5 +1,4 @@
 extern crate gfx_hal as hal;
-extern crate gfx_memory;
 extern crate imgui;
 #[macro_use]
 extern crate failure;
@@ -9,23 +8,28 @@ extern crate memoffset;
 use std::iter;
 use std::mem;
 
-use gfx_memory::{
-    Block, Factory, FactoryError, Item, MemoryAllocator, SmartAllocator, Type,
-};
 use hal::memory::Properties;
 use hal::pso::{PipelineStage, Rect};
 use hal::{
     buffer, command, device, format, image, memory, pass, pso, queue, Backend,
-    DescriptorPool, Device, Primitive, QueueGroup,
+    DescriptorPool, Device, MemoryTypeId, PhysicalDevice, Primitive,
+    QueueGroup,
 };
 use imgui::{DrawData, ImDrawIdx, ImDrawVert, ImGui, Ui};
 
-type SmartBlock<B> = <SmartAllocator<B> as MemoryAllocator<B>>::Block;
-
 #[derive(Clone, Debug, Fail)]
 pub enum Error {
-    #[fail(display = "memory factory error")]
-    FactoryError(#[cause] FactoryError),
+    #[fail(display = "can't find valid memory type for {}", _0)]
+    CantFindMemoryType(&'static str),
+
+    #[fail(display = "buffer creation error")]
+    BufferCreationError(#[cause] buffer::CreationError),
+
+    #[fail(display = "image creation error")]
+    ImageCreationError(#[cause] image::CreationError),
+
+    #[fail(display = "bind error")]
+    BindError(#[cause] device::BindError),
 
     #[fail(display = "image view error")]
     ImageViewError(#[cause] image::ViewError),
@@ -63,8 +67,10 @@ macro_rules! impl_from {
     };
 }
 
-impl_from!(Error, FactoryError, Error::FactoryError);
 impl_from!(Error, image::ViewError, Error::ImageViewError);
+impl_from!(Error, buffer::CreationError, Error::BufferCreationError);
+impl_from!(Error, image::CreationError, Error::ImageCreationError);
+impl_from!(Error, device::BindError, Error::BindError);
 impl_from!(Error, hal::error::HostExecutionError, Error::ExecutionError);
 impl_from!(Error, pso::AllocationError, Error::PipelineAllocationError);
 impl_from!(Error, hal::device::AllocationError, Error::AllocationError);
@@ -73,18 +79,22 @@ impl_from!(Error, pso::CreationError, Error::PipelineCreationError);
 impl_from!(Error, device::ShaderError, Error::ShaderError);
 impl_from!(Error, hal::mapping::Error, Error::MappingError);
 
-struct Buffer<B: Backend, T> {
-    length: usize,
-    buffer: Item<B::Buffer, SmartBlock<B>>,
+pub struct Buffers<B: Backend> {
+    memory: B::Memory,
     mapped: *mut u8,
-    _phantom: std::marker::PhantomData<T>,
+    vertex_buffer: B::Buffer,
+    index_buffer: B::Buffer,
+    index_offset: u64,
+    num_verts: usize,
+    num_inds: usize,
 }
 
 pub struct Renderer<B: Backend> {
     sampler: B::Sampler,
-    index_buffer: Option<Buffer<B, ImDrawIdx>>,
-    vertex_buffer: Option<Buffer<B, ImDrawVert>>,
-    image: Item<B::Image, SmartBlock<B>>,
+    image_memory: B::Memory,
+    memory_type_buffers: Option<MemoryTypeId>,
+    buffers: Option<Buffers<B>>,
+    image: B::Image,
     image_view: B::ImageView,
     descriptor_pool: B::DescriptorPool,
     descriptor_set_layout: B::DescriptorSetLayout,
@@ -93,58 +103,142 @@ pub struct Renderer<B: Backend> {
     pipeline_layout: B::PipelineLayout,
 }
 
-impl<B: Backend, T> Buffer<B, T> {
-    /// Allocates a new buffer
+impl<B: Backend> Buffers<B> {
+    /// Allocates a new pair of vertex and index buffers
     fn new(
-        length: usize,
-        usage: buffer::Usage,
+        memory_type: &mut Option<MemoryTypeId>,
+        num_verts: usize,
+        num_inds: usize,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
-    ) -> Result<Buffer<B, T>, Error> {
-        let buffer = allocator.create_buffer(
-            device,
-            (Type::General, Properties::CPU_VISIBLE),
-            (length * mem::size_of::<T>()) as u64,
-            usage,
-        )?;
+        physical_device: &B::PhysicalDevice,
+    ) -> Result<Buffers<B>, Error> {
+        // Calculate required size for each buffer. Note that total
+        // size cannot be calculated because of alignment between the
+        // buffers.
+        let verts_size = (num_verts * mem::size_of::<ImDrawVert>()) as u64;
+        let inds_size = (num_inds * mem::size_of::<ImDrawIdx>()) as u64;
 
-        let mapped = device
-            .map_memory(buffer.block().memory(), buffer.block().range())?;
+        // Create buffers.
+        let vertex_buffer =
+            device.create_buffer(verts_size, buffer::Usage::VERTEX)?;
+        let index_buffer =
+            device.create_buffer(inds_size, buffer::Usage::INDEX)?;
+        let vertex_requirements =
+            device.get_buffer_requirements(&vertex_buffer);
+        let index_requirements = device.get_buffer_requirements(&index_buffer);
+        // The GPU size requirements may be larger than a simple
+        // packed buffer.
+        let verts_size = vertex_requirements.size;
+        let inds_size = index_requirements.size;
 
-        Ok(Buffer {
-            length,
-            buffer,
+        // Determine offset given alignment.
+        let index_align = index_requirements.alignment;
+        let index_offset = if verts_size % index_align == 0 {
+            verts_size
+        } else {
+            verts_size + index_align - verts_size % index_align
+        };
+        let size = index_offset + inds_size;
+
+        // Find an applicable memory type.
+        let type_mask =
+            vertex_requirements.type_mask & index_requirements.type_mask;
+        let supported = |id| type_mask & (1u64 << id) != 0;
+        let memory_type = match memory_type {
+            // The old memory type is still valid.
+            &mut Some(MemoryTypeId(id)) if supported(id) => id,
+            // There was either no cached type or it was no longer
+            // valid for the new buffers.
+            memory_type => {
+                let memory_types =
+                    physical_device.memory_properties().memory_types;
+
+                let (ty, _) = memory_types
+                    .iter()
+                    .enumerate()
+                    .find(|(id, mem)| {
+                        supported(*id)
+                            && mem.properties.contains(Properties::CPU_VISIBLE)
+                    })
+                    .ok_or(Error::CantFindMemoryType("vertex/index buffers"))?;
+                *memory_type = Some(MemoryTypeId(ty));
+                ty
+            }
+        };
+        // Allocate and bind memory
+        let memory = device.allocate_memory(MemoryTypeId(memory_type), size)?;
+        let vertex_buffer =
+            device.bind_buffer_memory(&memory, 0, vertex_buffer)?;
+        let index_buffer =
+            device.bind_buffer_memory(&memory, index_offset, index_buffer)?;
+
+        let mapped = device.map_memory(&memory, 0..size)?;
+
+        Ok(Buffers {
+            memory,
             mapped,
-            _phantom: Default::default(),
+            vertex_buffer,
+            index_buffer,
+            index_offset,
+            num_verts,
+            num_inds,
         })
     }
 
-    /// Copies data into the buffer
-    fn update(&mut self, data: &[T], offset: usize)
-    where
-        T: Clone,
-    {
-        assert!(self.length >= data.len() + offset);
+    /// Checks if there is room in the buffer to store a number of vertices and
+    /// indices without re-allocating.
+    fn has_room(&self, num_verts: usize, num_inds: usize) -> bool {
+        self.num_verts >= num_verts && self.num_inds >= num_inds
+    }
+
+    /// Copies vertex and index data into the buffers.
+    fn update(
+        &mut self,
+        verts: &[ImDrawVert],
+        inds: &[ImDrawIdx],
+        vertex_offset: usize,
+        index_offset: usize,
+    ) {
+        assert!(self.num_verts >= verts.len() + vertex_offset);
+        assert!(self.num_inds >= inds.len() + index_offset);
         unsafe {
-            let dest =
-                self.mapped.offset((offset * mem::size_of::<T>()) as isize);
-            let src = &data[0];
-            std::ptr::copy_nonoverlapping(src, dest as *mut T, data.len());
+            // Copy vertex data.
+            let dest = self.mapped.offset(
+                (vertex_offset * mem::size_of::<ImDrawVert>()) as isize,
+            );
+            let src = &verts[0];
+            std::ptr::copy_nonoverlapping(
+                src,
+                dest as *mut ImDrawVert,
+                verts.len(),
+            );
+
+            // Copy index data.
+            let dest = self.mapped.offset(
+                (self.index_offset as usize
+                    + index_offset * mem::size_of::<ImDrawIdx>())
+                    as isize,
+            );
+            let src = &inds[0];
+            std::ptr::copy_nonoverlapping(
+                src,
+                dest as *mut ImDrawIdx,
+                inds.len(),
+            );
         }
     }
 
     /// Destroys the buffer
-    fn destroy(self, device: &B::Device, allocator: &mut SmartAllocator<B>) {
-        device.unmap_memory(self.buffer.block().memory());
-        allocator.destroy_buffer(device, self.buffer);
+    fn destroy(self, device: &B::Device) {
+        device.unmap_memory(&self.memory);
+        device.destroy_buffer(self.vertex_buffer);
+        device.destroy_buffer(self.index_buffer);
+        device.free_memory(self.memory);
     }
 
-    /// Flush memory changes to syncrhonize
+    /// Flush memory changes to syncrhonize.
     fn flush(&self, device: &B::Device) -> Result<(), Error> {
-        device.flush_mapped_memory_ranges(&[(
-            self.buffer.block().memory(),
-            self.buffer.block().range(),
-        )])?;
+        device.flush_mapped_memory_ranges(&[(&self.memory, ..)])?;
 
         Ok(())
     }
@@ -155,10 +249,10 @@ impl<B: Backend> Renderer<B> {
     pub fn new<C>(
         imgui: &mut ImGui,
         device: &B::Device,
+        physical_device: &B::PhysicalDevice,
         render_pass: &B::RenderPass,
         command_pool: &mut hal::CommandPool<B, C>,
         queue_group: &mut QueueGroup<B, C>,
-        allocator: &mut SmartAllocator<B>,
     ) -> Result<Renderer<B>, Error>
     where
         // yuck
@@ -168,17 +262,18 @@ impl<B: Backend> Renderer<B> {
             <(queue::Transfer, C) as queue::capability::Upper>::Result,
         >,
     {
+        // Determine memory types to use
+        let memory_types = physical_device.memory_properties().memory_types;
+
         // Copy texture
-        let (image, image_view, image_staging) = imgui
-            .prepare_texture::<_, Result<_, Error>>(|handle| {
+        let (image_memory, image, image_view, staging_memory, staging_buffer) =
+            imgui.prepare_texture::<_, Result<_, Error>>(|handle| {
                 let size = u64::from(handle.width * handle.height * 4);
 
                 // Create target image
                 let kind = image::Kind::D2(handle.width, handle.height, 1, 1);
                 let format = format::Format::Rgba8Unorm;
-                let image = allocator.create_image(
-                    device,
-                    (Type::General, Properties::DEVICE_LOCAL),
+                let image = device.create_image(
                     kind,
                     1,
                     format,
@@ -186,6 +281,22 @@ impl<B: Backend> Renderer<B> {
                     image::Usage::SAMPLED | image::Usage::TRANSFER_DST,
                     image::ViewCapabilities::empty(),
                 )?;
+                let requirements = device.get_image_requirements(&image);
+                // Find valid memory type
+                let (memory_type, _) = memory_types
+                    .iter()
+                    .enumerate()
+                    .find(|(id, mem)| {
+                        let supported =
+                            requirements.type_mask & (1u64 << id) != 0;
+                        supported
+                            && mem.properties.contains(Properties::DEVICE_LOCAL)
+                    })
+                    .ok_or(Error::CantFindMemoryType("image"))?;
+                let image_memory =
+                    device.allocate_memory(MemoryTypeId(memory_type), size)?;
+                let image =
+                    device.bind_image_memory(&image_memory, 0, image)?;
 
                 let subresource_range = image::SubresourceRange {
                     aspects: format::Aspects::COLOR,
@@ -194,7 +305,7 @@ impl<B: Backend> Renderer<B> {
                 };
 
                 let image_view = device.create_image_view(
-                    image.raw(),
+                    &image,
                     image::ViewKind::D2,
                     format,
                     format::Swizzle::NO,
@@ -202,22 +313,32 @@ impl<B: Backend> Renderer<B> {
                 )?;
 
                 // Create staging buffer
-                let staging_buffer = allocator.create_buffer(
-                    device,
-                    (
-                        Type::ShortLived,
-                        Properties::CPU_VISIBLE | Properties::COHERENT,
-                    ),
-                    size,
-                    buffer::Usage::TRANSFER_SRC,
+                let staging_buffer =
+                    device.create_buffer(size, buffer::Usage::TRANSFER_SRC)?;
+                let requirements =
+                    device.get_buffer_requirements(&staging_buffer);
+                let (memory_type, _) = memory_types
+                    .iter()
+                    .enumerate()
+                    .find(|(id, mem)| {
+                        let supported =
+                            requirements.type_mask & (1u64 << id) != 0;
+                        supported
+                            && mem.properties.contains(Properties::CPU_VISIBLE)
+                    })
+                    .ok_or(Error::CantFindMemoryType("image staging buffer"))?;
+                let staging_memory =
+                    device.allocate_memory(MemoryTypeId(memory_type), size)?;
+                let staging_buffer = device.bind_buffer_memory(
+                    &staging_memory,
+                    0,
+                    staging_buffer,
                 )?;
 
-                // Coppy data into the mapped staging buffer
+                // Copy data into the mapped staging buffer
                 {
-                    let mut map = device.acquire_mapping_writer(
-                        staging_buffer.block().memory(),
-                        staging_buffer.block().range(),
-                    )?;
+                    let mut map = device
+                        .acquire_mapping_writer(&staging_memory, 0..size)?;
                     map.clone_from_slice(handle.pixels);
                     device.release_mapping_writer(map)?;
                 }
@@ -236,7 +357,7 @@ impl<B: Backend> Renderer<B> {
                                 image::Access::TRANSFER_WRITE,
                                 image::Layout::TransferDstOptimal,
                             ),
-                        target: image.raw(),
+                        target: &image,
                         range: subresource_range.clone(),
                     };
 
@@ -247,8 +368,8 @@ impl<B: Backend> Renderer<B> {
                     );
 
                     cbuf.copy_buffer_to_image(
-                        staging_buffer.raw(),
-                        image.raw(),
+                        &staging_buffer,
+                        &image,
                         image::Layout::TransferDstOptimal,
                         &[command::BufferImageCopy {
                             buffer_offset: 0,
@@ -277,7 +398,7 @@ impl<B: Backend> Renderer<B> {
                                 image::Access::SHADER_READ,
                                 image::Layout::ShaderReadOnlyOptimal,
                             ),
-                        target: image.raw(),
+                        target: &image,
                         range: subresource_range.clone(),
                     };
                     cbuf.pipeline_barrier(
@@ -293,7 +414,13 @@ impl<B: Backend> Renderer<B> {
                 let submission = queue::Submission::new().submit(Some(submit));
                 queue_group.queues[0].submit(submission, None);
 
-                Ok((image, image_view, staging_buffer))
+                Ok((
+                    image_memory,
+                    image,
+                    image_view,
+                    staging_memory,
+                    staging_buffer,
+                ))
             })?;
 
         // Create font sampler
@@ -448,12 +575,14 @@ impl<B: Backend> Renderer<B> {
         queue_group.queues[0].wait_idle()?;
 
         // Destroy any temporary resources
-        allocator.destroy_buffer(device, image_staging);
+        device.destroy_buffer(staging_buffer);
+        device.free_memory(staging_memory);
 
         Ok(Renderer {
             sampler,
-            vertex_buffer: None,
-            index_buffer: None,
+            memory_type_buffers: None,
+            buffers: None,
+            image_memory,
             image,
             image_view,
             descriptor_pool,
@@ -470,49 +599,33 @@ impl<B: Backend> Renderer<B> {
         draw_data: &DrawData,
         pass: &mut command::RenderSubpassCommon<B>,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
+        physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
         // Possibly reallocate buffers
         if self
-            .vertex_buffer
+            .buffers
             .as_ref()
-            .map(|buffer| buffer.length < draw_data.total_vtx_count())
+            .map(|buffers| {
+                !buffers.has_room(
+                    draw_data.total_vtx_count(),
+                    draw_data.total_idx_count(),
+                )
+            })
             .unwrap_or(true)
         {
-            let buffer = Buffer::new(
+            let buffers = Buffers::new(
+                &mut self.memory_type_buffers,
                 draw_data.total_vtx_count(),
-                buffer::Usage::VERTEX,
-                device,
-                allocator,
-            )?;
-            if let Some(old) =
-                mem::replace(&mut self.vertex_buffer, Some(buffer))
-            {
-                old.destroy(device, allocator);
-            }
-        }
-        let vertex_buffer = self.vertex_buffer.as_mut().unwrap();
-        let mut vertex_offset = 0;
-
-        if self
-            .index_buffer
-            .as_ref()
-            .map(|buffer| buffer.length < draw_data.total_idx_count())
-            .unwrap_or(true)
-        {
-            let buffer = Buffer::new(
                 draw_data.total_idx_count(),
-                buffer::Usage::INDEX,
                 device,
-                allocator,
+                physical_device,
             )?;
-            if let Some(old) =
-                mem::replace(&mut self.index_buffer, Some(buffer))
-            {
-                old.destroy(device, allocator);
+            if let Some(old) = mem::replace(&mut self.buffers, Some(buffers)) {
+                old.destroy(device);
             }
         }
-        let index_buffer = self.index_buffer.as_mut().unwrap();
+        let buffers = self.buffers.as_mut().unwrap();
+        let mut vertex_offset = 0;
         let mut index_offset = 0;
 
         // Bind pipeline
@@ -525,12 +638,9 @@ impl<B: Backend> Renderer<B> {
         pass.bind_graphics_pipeline(&self.pipeline);
 
         // Bind vertex and index buffers
-        pass.bind_vertex_buffers(
-            0,
-            iter::once((vertex_buffer.buffer.raw(), 0)),
-        );
+        pass.bind_vertex_buffers(0, iter::once((&buffers.vertex_buffer, 0)));
         pass.bind_index_buffer(buffer::IndexBufferView {
-            buffer: index_buffer.buffer.raw(),
+            buffer: &buffers.index_buffer,
             offset: 0,
             index_type: hal::IndexType::U16,
         });
@@ -571,8 +681,12 @@ impl<B: Backend> Renderer<B> {
         // Iterate over drawlists
         for list in draw_data {
             // Update vertex and index buffers
-            vertex_buffer.update(list.vtx_buffer, vertex_offset);
-            index_buffer.update(list.idx_buffer, index_offset);
+            buffers.update(
+                list.vtx_buffer,
+                list.idx_buffer,
+                vertex_offset,
+                index_offset,
+            );
 
             for cmd in list.cmd_buffer.iter() {
                 // Calculate the scissor
@@ -598,8 +712,7 @@ impl<B: Backend> Renderer<B> {
             vertex_offset += list.vtx_buffer.len();
         }
 
-        vertex_buffer.flush(device)?;
-        index_buffer.flush(device)?;
+        buffers.flush(device)?;
 
         Ok(())
     }
@@ -610,21 +723,18 @@ impl<B: Backend> Renderer<B> {
         ui: Ui,
         render_pass: &mut command::RenderSubpassCommon<B>,
         device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
+        physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
         ui.render(|ui, draw_data| {
-            self.draw(ui, &draw_data, render_pass, device, allocator)
+            self.draw(ui, &draw_data, render_pass, device, physical_device)
         })?;
         Ok(())
     }
 
     /// Destroys all used objects.
-    pub fn destroy(
-        mut self,
-        device: &B::Device,
-        allocator: &mut SmartAllocator<B>,
-    ) {
-        allocator.destroy_image(device, self.image);
+    pub fn destroy(mut self, device: &B::Device) {
+        device.destroy_image(self.image);
+        device.free_memory(self.image_memory);
         device.destroy_image_view(self.image_view);
         device.destroy_sampler(self.sampler);
         self.descriptor_pool.reset();
@@ -632,11 +742,6 @@ impl<B: Backend> Renderer<B> {
         device.destroy_descriptor_set_layout(self.descriptor_set_layout);
         device.destroy_graphics_pipeline(self.pipeline);
         device.destroy_pipeline_layout(self.pipeline_layout);
-        if let Some(buffer) = self.index_buffer {
-            buffer.destroy(device, allocator);
-        }
-        if let Some(buffer) = self.vertex_buffer {
-            buffer.destroy(device, allocator);
-        }
+        self.buffers.map(|buffers| buffers.destroy(device));
     }
 }
