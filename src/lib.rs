@@ -79,6 +79,9 @@ impl_from!(Error, pso::CreationError, Error::PipelineCreationError);
 impl_from!(Error, device::ShaderError, Error::ShaderError);
 impl_from!(Error, hal::mapping::Error, Error::MappingError);
 
+// TODO: using a separate memory allocation for each frame's buffer
+// set is not great. The main issue with sharing memory for both frames is that
+// the old memory can't be freed until both frames are complete.
 pub struct Buffers<B: Backend> {
     memory: B::Memory,
     mapped: *mut u8,
@@ -93,7 +96,7 @@ pub struct Renderer<B: Backend> {
     sampler: B::Sampler,
     image_memory: B::Memory,
     memory_type_buffers: Option<MemoryTypeId>,
-    buffers: Option<Buffers<B>>,
+    buffers: Vec<Option<Buffers<B>>>,
     image: B::Image,
     image_view: B::ImageView,
     descriptor_pool: B::DescriptorPool,
@@ -251,6 +254,8 @@ impl<B: Backend> Renderer<B> {
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
         render_pass: &B::RenderPass,
+        subpass_index: usize,
+        max_frames: usize,
         command_pool: &mut hal::CommandPool<B, C>,
         queue: &mut CommandQueue<B, C>,
     ) -> Result<Renderer<B>, Error>
@@ -402,7 +407,7 @@ impl<B: Backend> Renderer<B> {
                         range: subresource_range.clone(),
                     };
                     cbuf.pipeline_barrier(
-                        PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+                        PipelineStage::TRANSFER..PipelineStage::BOTTOM_OF_PIPE,
                         memory::Dependencies::empty(),
                         &[image_barrier],
                     );
@@ -506,7 +511,7 @@ impl<B: Backend> Renderer<B> {
 
             // Create render pass
             let subpass = pass::Subpass {
-                index: 0,
+                index: subpass_index,
                 main_pass: render_pass,
             };
 
@@ -581,7 +586,7 @@ impl<B: Backend> Renderer<B> {
         Ok(Renderer {
             sampler,
             memory_type_buffers: None,
-            buffers: None,
+            buffers: (0..max_frames).map(|_| None).collect(),
             image_memory,
             image,
             image_view,
@@ -597,13 +602,13 @@ impl<B: Backend> Renderer<B> {
         &mut self,
         ui: &Ui,
         draw_data: &DrawData,
+        frame: usize,
         pass: &mut command::RenderSubpassCommon<B>,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
         // Possibly reallocate buffers
-        if self
-            .buffers
+        if self.buffers[frame]
             .as_ref()
             .map(|buffers| {
                 !buffers.has_room(
@@ -620,22 +625,24 @@ impl<B: Backend> Renderer<B> {
                 device,
                 physical_device,
             )?;
-            if let Some(old) = mem::replace(&mut self.buffers, Some(buffers)) {
+            if let Some(old) =
+                mem::replace(&mut self.buffers[frame], Some(buffers))
+            {
                 old.destroy(device);
             }
         }
-        let buffers = self.buffers.as_mut().unwrap();
+        let buffers = self.buffers[frame].as_mut().unwrap();
         let mut vertex_offset = 0;
         let mut index_offset = 0;
 
         // Bind pipeline
+        pass.bind_graphics_pipeline(&self.pipeline);
         pass.bind_graphics_descriptor_sets(
             &self.pipeline_layout,
             0,
             Some(&self.descriptor_set),
             None as Option<u32>,
         );
-        pass.bind_graphics_pipeline(&self.pipeline);
 
         // Bind vertex and index buffers
         pass.bind_vertex_buffers(0, iter::once((&buffers.vertex_buffer, 0)));
@@ -721,12 +728,20 @@ impl<B: Backend> Renderer<B> {
     pub fn render(
         &mut self,
         ui: Ui,
+        frame: usize,
         render_pass: &mut command::RenderSubpassCommon<B>,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
         ui.render(|ui, draw_data| {
-            self.draw(ui, &draw_data, render_pass, device, physical_device)
+            self.draw(
+                ui,
+                &draw_data,
+                frame,
+                render_pass,
+                device,
+                physical_device,
+            )
         })?;
         Ok(())
     }
@@ -742,6 +757,8 @@ impl<B: Backend> Renderer<B> {
         device.destroy_descriptor_set_layout(self.descriptor_set_layout);
         device.destroy_graphics_pipeline(self.pipeline);
         device.destroy_pipeline_layout(self.pipeline_layout);
-        self.buffers.map(|buffers| buffers.destroy(device));
+        for buffers in self.buffers.into_iter() {
+            buffers.map(|buffers| buffers.destroy(device));
+        }
     }
 }
