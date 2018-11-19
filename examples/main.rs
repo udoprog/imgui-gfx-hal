@@ -135,7 +135,7 @@ fn main() {
         physical_device,
         &render_pass,
         &mut command_pool,
-        &mut queue_group,
+        &mut queue_group.queues[0],
     )
     .unwrap();
 

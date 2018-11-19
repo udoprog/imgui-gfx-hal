@@ -12,8 +12,8 @@ use hal::memory::Properties;
 use hal::pso::{PipelineStage, Rect};
 use hal::{
     buffer, command, device, format, image, memory, pass, pso, queue, Backend,
-    DescriptorPool, Device, MemoryTypeId, PhysicalDevice, Primitive,
-    QueueGroup,
+    CommandQueue, DescriptorPool, Device, MemoryTypeId, PhysicalDevice,
+    Primitive,
 };
 use imgui::{DrawData, ImDrawIdx, ImDrawVert, ImGui, Ui};
 
@@ -252,7 +252,7 @@ impl<B: Backend> Renderer<B> {
         physical_device: &B::PhysicalDevice,
         render_pass: &B::RenderPass,
         command_pool: &mut hal::CommandPool<B, C>,
-        queue_group: &mut QueueGroup<B, C>,
+        queue: &mut CommandQueue<B, C>,
     ) -> Result<Renderer<B>, Error>
     where
         // yuck
@@ -412,7 +412,7 @@ impl<B: Backend> Renderer<B> {
 
                 // Submit to the queue
                 let submission = queue::Submission::new().submit(Some(submit));
-                queue_group.queues[0].submit(submission, None);
+                queue.submit(submission, None);
 
                 Ok((
                     image_memory,
@@ -572,7 +572,7 @@ impl<B: Backend> Renderer<B> {
         device.destroy_shader_module(fs_module);
 
         // Wait until all transfers have finished
-        queue_group.queues[0].wait_idle()?;
+        queue.wait_idle()?;
 
         // Destroy any temporary resources
         device.destroy_buffer(staging_buffer);
