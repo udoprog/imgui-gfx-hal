@@ -134,6 +134,8 @@ fn main() {
         &device,
         physical_device,
         &render_pass,
+        0,
+        1,
         &mut command_pool,
         &mut queue_group.queues[0],
     )
@@ -333,8 +335,10 @@ fn main() {
                         [0.2, 0.2, 0.2, 1.0],
                     ))],
                 );
+
+                // Frame is always 0, since no double buffering.
                 renderer
-                    .render(ui, &mut encoder, &device, &physical_device)
+                    .render(ui, 0, &mut encoder, &device, &physical_device)
                     .unwrap();
             }
 
