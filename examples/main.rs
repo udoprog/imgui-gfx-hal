@@ -45,15 +45,15 @@ fn main() {
     };
     let physical_device = &adapter.physical_device;
 
-    let mut command_pool = device
-        .create_command_pool_typed(
+    let mut command_pool = unsafe {
+        device.create_command_pool_typed(
             &queue_group,
             pool::CommandPoolCreateFlags::empty(),
-            16,
         )
-        .unwrap();
+    }
+    .unwrap();
 
-    let (caps, formats, _) = surface.compatibility(&adapter.physical_device);
+    let (caps, formats, _, _) = surface.compatibility(&adapter.physical_device);
     let format = formats.map_or(format::Format::Rgba8Srgb, |formats| {
         formats
             .iter()
@@ -91,9 +91,11 @@ fn main() {
         caps.image_count.start,
     )
     .with_image_usage(image::Usage::COLOR_ATTACHMENT);
-    let (mut swap_chain, backbuffer) = device
-        .create_swapchain(&mut surface, swap_config, None)
-        .unwrap();
+    let (mut swap_chain, backbuffer) = unsafe {
+        device
+            .create_swapchain(&mut surface, swap_config, None)
+            .unwrap()
+    };
 
     let render_pass = {
         let attachment = pass::Attachment {
@@ -124,9 +126,11 @@ fn main() {
                     | image::Access::COLOR_ATTACHMENT_WRITE),
         };
 
-        device
-            .create_render_pass(&[attachment], &[subpass], &[dependency])
-            .unwrap()
+        unsafe {
+            device
+                .create_render_pass(&[attachment], &[subpass], &[dependency])
+                .unwrap()
+        }
     };
 
     let mut renderer = imgui_gfx_hal::Renderer::new(
@@ -150,7 +154,7 @@ fn main() {
             };
             let pairs = images
                 .into_iter()
-                .map(|image| {
+                .map(|image| unsafe {
                     let rtv = device
                         .create_image_view(
                             &image,
@@ -169,7 +173,7 @@ fn main() {
                 .collect::<Vec<_>>();
             let fbos = pairs
                 .iter()
-                .map(|&(_, ref rtv)| {
+                .map(|&(_, ref rtv)| unsafe {
                     device
                         .create_framebuffer(&render_pass, Some(rtv), extent)
                         .unwrap()
@@ -191,12 +195,16 @@ fn main() {
     };
 
     let mut frame_semaphore = device.create_semaphore().unwrap();
+    let present_semaphore = device.create_semaphore().unwrap();
     let mut frame_fence = device.create_fence(false).unwrap();
 
     let mut last_frame = Instant::now();
     let mut running = true;
     let mut opened = true;
     let mut mouse_state = MouseState::default();
+    
+    let mut cmd_buffer =
+        command_pool.acquire_command_buffer::<command::OneShot>();
 
     while running {
         events_loop.poll_events(|event| {
@@ -277,7 +285,7 @@ fn main() {
                 }
             }
         });
-
+        
         let scale = imgui.display_framebuffer_scale();
         imgui.set_mouse_pos(
             mouse_state.pos.0 as f32 / scale.0,
@@ -299,9 +307,7 @@ fn main() {
             + delta.subsec_nanos() as f32 / 1_000_000_000.0;
         last_frame = now;
 
-        device.reset_fence(&frame_fence).unwrap();
-        command_pool.reset();
-        let frame: hal::SwapImageIndex = {
+        let frame: hal::SwapImageIndex = unsafe {
             match swap_chain
                 .acquire_image(!0, FrameSync::Semaphore(&mut frame_semaphore))
             {
@@ -323,9 +329,9 @@ fn main() {
         let ui = imgui.frame(frame_size, delta_s);
         ui.show_demo_window(&mut opened);
 
-        let submit = {
-            let mut cmd_buffer = command_pool.acquire_command_buffer(false);
-
+        unsafe {
+            cmd_buffer.begin();
+            
             {
                 let mut encoder = cmd_buffer.begin_render_pass_inline(
                     &render_pass,
@@ -342,33 +348,45 @@ fn main() {
                     .unwrap();
             }
 
-            cmd_buffer.finish()
-        };
+            cmd_buffer.finish();
 
-        let submission = Submission::new()
-            .wait_on(&[(&frame_semaphore, PipelineStage::BOTTOM_OF_PIPE)])
-            .submit(Some(submit));
-        queue_group.queues[0].submit(submission, Some(&mut frame_fence));
+            let submission = Submission {
+                command_buffers: Some(&cmd_buffer),
+                wait_semaphores: Some((
+                    &frame_semaphore,
+                    PipelineStage::BOTTOM_OF_PIPE,
+                )),
+                signal_semaphores: Some(&present_semaphore),
+            };
+            queue_group.queues[0].submit(submission, Some(&mut frame_fence));
 
-        device.wait_for_fence(&frame_fence, !0).unwrap();
+            if let Err(()) = swap_chain
+                .present(&mut queue_group.queues[0], frame, Some(&present_semaphore))
+            {
+                panic!("problem presenting swapchain");
+            }
 
-        if let Err(()) =
-            swap_chain.present(&mut queue_group.queues[0], frame, &[])
-        {
-            panic!("problem presenting swapchain");
+            // Wait for the command buffer to be done.
+            device.wait_for_fence(&frame_fence, !0).unwrap();
+            device.reset_fence(&frame_fence).unwrap();
+            command_pool.reset();
         }
     }
 
-    device.destroy_command_pool(command_pool.into_raw());
-    device.destroy_fence(frame_fence);
-    device.destroy_semaphore(frame_semaphore);
-    device.destroy_render_pass(render_pass);
-    for framebuffer in framebuffers {
-        device.destroy_framebuffer(framebuffer);
+    device.wait_idle().unwrap();
+    unsafe {
+        device.destroy_command_pool(command_pool.into_raw());
+        device.destroy_fence(frame_fence);
+        device.destroy_semaphore(frame_semaphore);
+        device.destroy_semaphore(present_semaphore);
+        device.destroy_render_pass(render_pass);
+        for framebuffer in framebuffers {
+            device.destroy_framebuffer(framebuffer);
+        }
+        for (_, rtv) in frame_images {
+            device.destroy_image_view(rtv);
+        }
+        device.destroy_swapchain(swap_chain);
+        renderer.destroy(&device);
     }
-    for (_, rtv) in frame_images {
-        device.destroy_image_view(rtv);
-    }
-    device.destroy_swapchain(swap_chain);
-    renderer.destroy(&device);
 }

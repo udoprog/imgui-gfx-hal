@@ -4,12 +4,12 @@ version = "0.1.0"
 authors = ["Benjamin <benjamin.fik.lee@gmail.com>"]
 
 [dependencies]
-gfx-hal = { git = "https://github.com/gfx-rs/gfx", rev = "a9986822ec6f679aff607b383126489e026d70f6" }
 failure = "0.1"
 memoffset = "0.2"
-imgui = ">=0.0.20"
+gfx-hal = "~0.1.0"
+imgui = "~0.0.20"
 
 [dev-dependencies]
-gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx", rev = "a9986822ec6f679aff607b383126489e026d70f6" }
+gfx-backend-vulkan = "0.1.0"
 env_logger = "0.6"
 winit = "0.18"
