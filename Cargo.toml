@@ -2,6 +2,11 @@
 name = "imgui-gfx-hal"
 version = "0.1.0"
 authors = ["Benjamin <benjamin.fik.lee@gmail.com>"]
+repository = "https://git.chronicembetterment.org/benjamin/imgui-gfx-hal"
+homepage = "https://git.chronicembetterment.org/benjamin/imgui-gfx-hal"
+description = "An imgui renderer backend for gfx-hal"
+readme = "README.md"
+license = "Unlicense/MIT"
 
 [dependencies]
 failure = "0.1"
