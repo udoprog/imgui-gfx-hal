@@ -202,7 +202,7 @@ fn main() {
     let mut running = true;
     let mut opened = true;
     let mut mouse_state = MouseState::default();
-    
+
     let mut cmd_buffer =
         command_pool.acquire_command_buffer::<command::OneShot>();
 
@@ -285,7 +285,7 @@ fn main() {
                 }
             }
         });
-        
+
         let scale = imgui.display_framebuffer_scale();
         imgui.set_mouse_pos(
             mouse_state.pos.0 as f32 / scale.0,
@@ -331,7 +331,7 @@ fn main() {
 
         unsafe {
             cmd_buffer.begin();
-            
+
             {
                 let mut encoder = cmd_buffer.begin_render_pass_inline(
                     &render_pass,
@@ -360,9 +360,11 @@ fn main() {
             };
             queue_group.queues[0].submit(submission, Some(&mut frame_fence));
 
-            if let Err(()) = swap_chain
-                .present(&mut queue_group.queues[0], frame, Some(&present_semaphore))
-            {
+            if let Err(()) = swap_chain.present(
+                &mut queue_group.queues[0],
+                frame,
+                Some(&present_semaphore),
+            ) {
                 panic!("problem presenting swapchain");
             }
 

@@ -90,7 +90,7 @@ impl From<hal::device::OomOrDeviceLost> for Error {
         use hal::device::OomOrDeviceLost::*;
         match err {
             OutOfMemory(err) => Error::OutOfMemoryError(err),
-            DeviceLost(err) => Error::DeviceLostError(err)
+            DeviceLost(err) => Error::DeviceLostError(err),
         }
     }
 }
@@ -293,10 +293,10 @@ impl<B: Backend> Renderer<B> {
         C: queue::Capability + queue::Supports<queue::Transfer>,
     {
         // Fence and command buffer for all transfer operations
-        let mut transfer_cbuf = command_pool
-            .acquire_command_buffer::<command::OneShot>();
+        let mut transfer_cbuf =
+            command_pool.acquire_command_buffer::<command::OneShot>();
         let transfer_fence = device.create_fence(false)?;
-        
+
         // Determine memory types to use
         let memory_types = physical_device.memory_properties().memory_types;
 
@@ -440,7 +440,7 @@ impl<B: Backend> Renderer<B> {
                         range: subresource_range.clone(),
                     };
                     transfer_cbuf.pipeline_barrier(
-                        PipelineStage::TRANSFER..PipelineStage::BOTTOM_OF_PIPE,
+                        PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
                         memory::Dependencies::empty(),
                         &[image_barrier],
                     );
@@ -448,7 +448,10 @@ impl<B: Backend> Renderer<B> {
                     transfer_cbuf.finish();
 
                     // Submit to the queue
-                    queue.submit_nosemaphores(Some(&transfer_cbuf), Some(&transfer_fence));
+                    queue.submit_nosemaphores(
+                        Some(&transfer_cbuf),
+                        Some(&transfer_fence),
+                    );
                 }
 
                 Ok((
