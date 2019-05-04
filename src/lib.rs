@@ -657,10 +657,16 @@ impl<B: Backend> Renderer<B> {
             })
             .unwrap_or(true)
         {
+            let num_verts = draw_data.total_vtx_count();
+            let num_inds = draw_data.total_idx_count();
+            if num_verts == 0 || num_inds == 0 {
+                // don't need to do anything
+                return Ok(());
+            }
             let buffers = Buffers::new(
                 &mut self.memory_type_buffers,
-                draw_data.total_vtx_count(),
-                draw_data.total_idx_count(),
+                num_verts,
+                num_inds,
                 device,
                 physical_device,
             )?;
