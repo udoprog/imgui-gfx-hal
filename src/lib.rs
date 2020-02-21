@@ -17,7 +17,8 @@ use hal::{
     CommandQueue, DescriptorPool, Device, MemoryTypeId, PhysicalDevice,
     Primitive,
 };
-use imgui::{DrawData, ImDrawIdx, ImDrawVert, ImGui, Ui};
+use imgui::{ImDrawIdx, ImDrawVert, ImGui, Ui};
+use imgui::{DrawCmd, DrawCmdParams, DrawData, ImString, TextureId, Textures};
 
 #[derive(Clone, Debug, Fail)]
 pub enum Error {
@@ -117,9 +118,10 @@ pub struct Renderer<B: Backend> {
     image_view: B::ImageView,
     descriptor_pool: B::DescriptorPool,
     descriptor_set_layout: B::DescriptorSetLayout,
-    descriptor_set: B::DescriptorSet,
+   // descriptor_set: B::DescriptorSet,
     pipeline: B::GraphicsPipeline,
     pipeline_layout: B::PipelineLayout,
+    texture_sets : Vec<B::DescriptorSet>
 }
 
 impl<B: Backend> Buffers<B> {
@@ -279,8 +281,80 @@ impl<B: Backend> Buffers<B> {
 
 impl<B: Backend> Renderer<B> {
     /// Initializes the renderer.
+    
+  /*  ImTextureID ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image_view, VkImageLayout image_layout){
+    VkResult err;
+
+    printf("we are in add Texture, image layout is %d\n", image_layout);
+    fflush(stdout);
+    VkDescriptorSet descriptor_set;
+    // Create Descriptor Set:
+    {
+        VkDescriptorSetAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = g_DescriptorPool;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &g_DescriptorSetLayout;
+        err = vkAllocateDescriptorSets(g_Device, &alloc_info, &descriptor_set);
+        check_vk_result(err);
+    }
+
+    // Update the Descriptor Set:
+    {
+        VkDescriptorImageInfo desc_image[1] = {};
+        desc_image[0].sampler = sampler;
+        desc_image[0].imageView = image_view;
+        desc_image[0].imageLayout = image_layout;
+        VkWriteDescriptorSet write_desc[1] = {};
+        write_desc[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write_desc[0].dstSet = descriptor_set;
+        write_desc[0].descriptorCount = 1;
+        write_desc[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write_desc[0].pImageInfo = desc_image;
+        vkUpdateDescriptorSets(g_Device, 1, write_desc, 0, NULL);
+    }
+
+    return (ImTextureID)descriptor_set;
+}*/
+
+    pub fn add_texture(&mut self,device : &B::Device,sampler : B::Sampler, image_view : B::ImageView, image_layout : hal::image::Layout) -> TextureId {
+            
+            let descriptor_set = unsafe { 
+                self.descriptor_pool.allocate_set(&self.descriptor_set_layout).expect("could not allocate ds set in add_texture")
+                };
+
+            {
+                let write = pso::DescriptorSetWrite {
+                    set: &descriptor_set,
+                    binding: 0,
+                    array_offset: 0,
+                    descriptors: &[pso::Descriptor::CombinedImageSampler(
+                        &image_view,
+                        image::Layout::ShaderReadOnlyOptimal,
+                        &sampler,
+                    )],
+                };
+                unsafe {
+                device.write_descriptor_sets(Some(write));
+                }
+            }
+             
+             self.texture_sets.push(descriptor_set);
+             let index = self.texture_sets.len() - 1;
+        
+        
+        
+        
+        
+        unsafe {
+            std::mem::transmute::<usize,TextureId>(index)
+        }
+    }
+    
+    
     pub fn new<C>(
-        imgui: &mut ImGui,
+        //imgui: &mut ImGui,
+        ctx : &mut imgui::Context,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
         render_pass: &B::RenderPass,
@@ -300,9 +374,12 @@ impl<B: Backend> Renderer<B> {
         // Determine memory types to use
         let memory_types = physical_device.memory_properties().memory_types;
 
+   
+        let mut fonts = ctx.fonts();
+        let handle = fonts.build_rgba32_texture();
         // Copy texture
         let (image_memory, image, image_view, staging_memory, staging_buffer) =
-            imgui.prepare_texture::<_, Result<_, Error>>(|handle| unsafe {
+            unsafe { 
                 let size = u64::from(handle.width * handle.height * 4);
 
                 // Create target image
@@ -373,7 +450,7 @@ impl<B: Backend> Renderer<B> {
                 {
                     let mut map = device
                         .acquire_mapping_writer(&staging_memory, 0..size)?;
-                    map.clone_from_slice(handle.pixels);
+                    map.clone_from_slice(handle.data);
                     device.release_mapping_writer(map)?;
                 }
 
@@ -454,14 +531,14 @@ impl<B: Backend> Renderer<B> {
                     );
                 }
 
-                Ok((
+                (
                     image_memory,
                     image,
                     image_view,
                     staging_memory,
                     staging_buffer,
-                ))
-            })?;
+                )
+            };
 
         unsafe {
             // Create font sampler
@@ -483,11 +560,12 @@ impl<B: Backend> Renderer<B> {
             )?;
 
             let mut descriptor_pool = device.create_descriptor_pool(
-                1,
+                100,
                 &[pso::DescriptorRangeDesc {
                     ty: pso::DescriptorType::CombinedImageSampler,
-                    count: 1,
+                    count: 100,
                 }],
+                 pso::DescriptorPoolCreateFlags::empty()
             )?;
 
             let descriptor_set =
@@ -572,7 +650,7 @@ impl<B: Backend> Renderer<B> {
                 pipeline_desc.vertex_buffers.push(pso::VertexBufferDesc {
                     binding: 0,
                     stride: mem::size_of::<ImDrawVert>() as u32,
-                    rate: 0,
+                    rate: hal::pso::VertexInputRate::Vertex,
                 });
 
                 // Set up vertex attributes
@@ -581,7 +659,7 @@ impl<B: Backend> Renderer<B> {
                     location: 0,
                     binding: 0,
                     element: pso::Element {
-                        format: format::Format::Rg32Float,
+                        format: format::Format::Rg32Sfloat,
                         offset: offset_of!(ImDrawVert, pos) as u32,
                     },
                 });
@@ -590,7 +668,7 @@ impl<B: Backend> Renderer<B> {
                     location: 1,
                     binding: 0,
                     element: pso::Element {
-                        format: format::Format::Rg32Float,
+                        format: format::Format::Rg32Sfloat,
                         offset: offset_of!(ImDrawVert, uv) as u32,
                     },
                 });
@@ -630,16 +708,15 @@ impl<B: Backend> Renderer<B> {
                 image_view,
                 descriptor_pool,
                 descriptor_set_layout,
-                descriptor_set,
+              //  descriptor_set,
                 pipeline,
-                pipeline_layout,
+                pipeline_layout, texture_sets : vec![descriptor_set]
             })
         }
     }
 
     fn draw<C: BorrowMut<B::CommandBuffer>>(
         &mut self,
-        ui: &Ui,
         draw_data: &DrawData,
         frame: usize,
         pass: &mut command::RenderSubpassCommon<B, C>,
@@ -651,14 +728,14 @@ impl<B: Backend> Renderer<B> {
             .as_ref()
             .map(|buffers| {
                 !buffers.has_room(
-                    draw_data.total_vtx_count(),
-                    draw_data.total_idx_count(),
+                    draw_data.total_vtx_count as usize,
+                    draw_data.total_idx_count as usize,
                 )
             })
             .unwrap_or(true)
         {
-            let num_verts = draw_data.total_vtx_count();
-            let num_inds = draw_data.total_idx_count();
+            let num_verts = draw_data.total_vtx_count as usize;
+            let num_inds = draw_data.total_idx_count as usize;
             if num_verts == 0 || num_inds == 0 {
                 // don't need to do anything
                 return Ok(());
@@ -683,12 +760,12 @@ impl<B: Backend> Renderer<B> {
         unsafe {
             // Bind pipeline
             pass.bind_graphics_pipeline(&self.pipeline);
-            pass.bind_graphics_descriptor_sets(
+          /*  pass.bind_graphics_descriptor_sets(
                 &self.pipeline_layout,
                 0,
-                Some(&self.descriptor_set),
+                Some(&self.texture_sets[0]),
                 None as Option<u32>,
-            );
+            );*/
 
             // Bind vertex and index buffers
             pass.bind_vertex_buffers(
@@ -701,7 +778,7 @@ impl<B: Backend> Renderer<B> {
                 index_type: hal::IndexType::U16,
             });
 
-            let (width, height) = ui.imgui().display_size();
+            let (width, height) = (draw_data.display_size[0], draw_data.display_size[1]);
 
             // Set up viewport
             let viewport = pso::Viewport {
@@ -734,38 +811,71 @@ impl<B: Backend> Renderer<B> {
             );
 
             // Iterate over drawlists
-            for list in draw_data {
+            for list in draw_data.draw_lists() {
                 // Update vertex and index buffers
                 buffers.update(
-                    list.vtx_buffer,
-                    list.idx_buffer,
+                    list.vtx_buffer(),
+                    list.idx_buffer(),
                     vertex_offset,
                     index_offset,
                 );
 
-                for cmd in list.cmd_buffer.iter() {
-                    // Calculate the scissor
+                for cmd in list.commands() {
+                        match cmd {
+                    DrawCmd::Elements {
+                        count,
+                        cmd_params:
+                            DrawCmdParams {
+                                clip_rect,
+                                texture_id,
+                                ..
+                            },
+                    } => {
+                    //Calculate the scissor
                     let scissor = Rect {
-                        x: cmd.clip_rect.x as i16,
-                        y: cmd.clip_rect.y as i16,
-                        w: (cmd.clip_rect.z - cmd.clip_rect.x) as i16,
-                        h: (cmd.clip_rect.w - cmd.clip_rect.y) as i16,
+                        x: clip_rect[0] as i16,
+                        y: clip_rect[1] as i16,
+                        w: (clip_rect[2] - clip_rect[0]) as i16,
+                        h: (clip_rect[3] - clip_rect[1]) as i16,
                     };
                     pass.set_scissors(0, &[scissor]);
+
+                    
+                  //  pass
+                    //                    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_PipelineLayout, 0, 1, desc_set, 0, NULL);
+                
+                  let texture_index = texture_id.id();
+                  
+                    println!("texture id is {}",texture_index);
+                  
+                     pass.bind_graphics_descriptor_sets(
+                &self.pipeline_layout,
+                0,
+                Some(&self.texture_sets[texture_index]),
+                None as Option<u32>,
+            );
+                
 
                     // Actually draw things
                     pass.draw_indexed(
                         index_offset as u32
-                            ..index_offset as u32 + cmd.elem_count,
+                            ..index_offset as u32 + count as u32,
                         vertex_offset as i32,
                         0..1,
                     );
 
-                    index_offset += cmd.elem_count as usize;
+                    index_offset += count as usize;
+                    }
+                    DrawCmd::ResetRenderState => (), // TODO
+                    DrawCmd::RawCallback { callback, raw_cmd } => unsafe {
+                        //(callback(draw_list.raw(), raw_cmd)
+                    },
+                }
+                
                 }
 
                 // Increment offsets
-                vertex_offset += list.vtx_buffer.len();
+                vertex_offset += list.vtx_buffer().len();
             }
 
             buffers.flush(device)?;
@@ -783,16 +893,18 @@ impl<B: Backend> Renderer<B> {
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
-        ui.render(|ui, draw_data| {
+       
+       let draw_data = ui.render();
+       
+     
             self.draw(
-                ui,
                 &draw_data,
                 frame,
                 render_pass,
                 device,
                 physical_device,
-            )
-        })?;
+            );
+    
         Ok(())
     }
 
