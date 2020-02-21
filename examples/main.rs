@@ -10,8 +10,8 @@ use std::time::Instant;
 use hal::format::ChannelType;
 use hal::pso::PipelineStage;
 use hal::{
-    command, format, image, pass, pool, pso, Backbuffer, Device, FrameSync,
-    Instance, Submission, Surface, Swapchain, SwapchainConfig,
+    command, format, image, pass, pool, pso, Backbuffer, Device, FrameSync, Instance, Submission,
+    Surface, Swapchain, SwapchainConfig,
 };
 use imgui::{FrameSize, ImGui};
 
@@ -36,9 +36,9 @@ fn main() {
 
     let (adapter, device, mut queue_group) = loop {
         let adapter = adapters.next().expect("No suitable adapter found");
-        match adapter.open_with::<_, gfx_hal::Graphics>(1, |family| {
-            surface.supports_queue_family(family)
-        }) {
+        match adapter
+            .open_with::<_, gfx_hal::Graphics>(1, |family| surface.supports_queue_family(family))
+        {
             Ok((device, queue_group)) => break (adapter, device, queue_group),
             Err(_) => (),
         }
@@ -46,10 +46,7 @@ fn main() {
     let physical_device = &adapter.physical_device;
 
     let mut command_pool = unsafe {
-        device.create_command_pool_typed(
-            &queue_group,
-            pool::CommandPoolCreateFlags::empty(),
-        )
+        device.create_command_pool_typed(&queue_group, pool::CommandPoolCreateFlags::empty())
     }
     .unwrap();
 
@@ -84,13 +81,9 @@ fn main() {
         }
     };
 
-    let swap_config = SwapchainConfig::new(
-        extent.width,
-        extent.height,
-        format,
-        caps.image_count.start,
-    )
-    .with_image_usage(image::Usage::COLOR_ATTACHMENT);
+    let swap_config =
+        SwapchainConfig::new(extent.width, extent.height, format, caps.image_count.start)
+            .with_image_usage(image::Usage::COLOR_ATTACHMENT);
     let (mut swap_chain, backbuffer) = unsafe {
         device
             .create_swapchain(&mut surface, swap_config, None)
@@ -119,11 +112,9 @@ fn main() {
 
         let dependency = pass::SubpassDependency {
             passes: pass::SubpassRef::External..pass::SubpassRef::Pass(0),
-            stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-                ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+            stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
             accesses: image::Access::empty()
-                ..(image::Access::COLOR_ATTACHMENT_READ
-                    | image::Access::COLOR_ATTACHMENT_WRITE),
+                ..(image::Access::COLOR_ATTACHMENT_READ | image::Access::COLOR_ATTACHMENT_WRITE),
         };
 
         unsafe {
@@ -203,8 +194,7 @@ fn main() {
     let mut opened = true;
     let mut mouse_state = MouseState::default();
 
-    let mut cmd_buffer =
-        command_pool.acquire_command_buffer::<command::OneShot>();
+    let mut cmd_buffer = command_pool.acquire_command_buffer::<command::OneShot>();
 
     while running {
         events_loop.poll_events(|event| {
@@ -242,15 +232,9 @@ fn main() {
                             Some(Key::LControl) | Some(Key::RControl) => {
                                 imgui.set_key_ctrl(pressed)
                             }
-                            Some(Key::LShift) | Some(Key::RShift) => {
-                                imgui.set_key_shift(pressed)
-                            }
-                            Some(Key::LAlt) | Some(Key::RAlt) => {
-                                imgui.set_key_alt(pressed)
-                            }
-                            Some(Key::LWin) | Some(Key::RWin) => {
-                                imgui.set_key_super(pressed)
-                            }
+                            Some(Key::LShift) | Some(Key::RShift) => imgui.set_key_shift(pressed),
+                            Some(Key::LAlt) | Some(Key::RAlt) => imgui.set_key_alt(pressed),
+                            Some(Key::LWin) | Some(Key::RWin) => imgui.set_key_super(pressed),
                             _ => {}
                         }
                     }
@@ -259,15 +243,9 @@ fn main() {
                         mouse_state.pos = (x, y);
                     }
                     MouseInput { state, button, .. } => match button {
-                        MouseButton::Left => {
-                            mouse_state.pressed.0 = state == Pressed
-                        }
-                        MouseButton::Right => {
-                            mouse_state.pressed.1 = state == Pressed
-                        }
-                        MouseButton::Middle => {
-                            mouse_state.pressed.2 = state == Pressed
-                        }
+                        MouseButton::Left => mouse_state.pressed.0 = state == Pressed,
+                        MouseButton::Right => mouse_state.pressed.1 = state == Pressed,
+                        MouseButton::Middle => mouse_state.pressed.2 = state == Pressed,
                         _ => {}
                     },
                     MouseWheel {
@@ -303,14 +281,11 @@ fn main() {
 
         let now = Instant::now();
         let delta = now - last_frame;
-        let delta_s = delta.as_secs() as f32
-            + delta.subsec_nanos() as f32 / 1_000_000_000.0;
+        let delta_s = delta.as_secs() as f32 + delta.subsec_nanos() as f32 / 1_000_000_000.0;
         last_frame = now;
 
         let frame: hal::SwapImageIndex = unsafe {
-            match swap_chain
-                .acquire_image(!0, FrameSync::Semaphore(&mut frame_semaphore))
-            {
+            match swap_chain.acquire_image(!0, FrameSync::Semaphore(&mut frame_semaphore)) {
                 Ok(i) => i,
                 Err(err) => panic!("problem: {:?}", err),
             }
@@ -337,9 +312,9 @@ fn main() {
                     &render_pass,
                     &framebuffers[frame as usize],
                     viewport.rect,
-                    &[command::ClearValue::Color(command::ClearColor::Float(
-                        [0.2, 0.2, 0.2, 1.0],
-                    ))],
+                    &[command::ClearValue::Color(command::ClearColor::Float([
+                        0.2, 0.2, 0.2, 1.0,
+                    ]))],
                 );
 
                 // Frame is always 0, since no double buffering.
@@ -352,19 +327,14 @@ fn main() {
 
             let submission = Submission {
                 command_buffers: Some(&cmd_buffer),
-                wait_semaphores: Some((
-                    &frame_semaphore,
-                    PipelineStage::BOTTOM_OF_PIPE,
-                )),
+                wait_semaphores: Some((&frame_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
                 signal_semaphores: Some(&present_semaphore),
             };
             queue_group.queues[0].submit(submission, Some(&mut frame_fence));
 
-            if let Err(()) = swap_chain.present(
-                &mut queue_group.queues[0],
-                frame,
-                Some(&present_semaphore),
-            ) {
+            if let Err(()) =
+                swap_chain.present(&mut queue_group.queues[0], frame, Some(&present_semaphore))
+            {
                 panic!("problem presenting swapchain");
             }
 

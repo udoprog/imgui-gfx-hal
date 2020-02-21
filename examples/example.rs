@@ -4,25 +4,23 @@ extern crate gfx_hal as hal;
 #[macro_use]
 extern crate imgui;
 extern crate imgui_gfx_hal;
-extern crate winit;
 extern crate imgui_winit_support;
+extern crate winit;
 
 use std::time::Instant;
 
 use hal::format::ChannelType;
 use hal::pso::PipelineStage;
 use hal::{
-    command, format, image, pass, pool, pso, Device,
-    Instance, Submission, Surface, Swapchain, SwapchainConfig, Backend
+    command, format, image, pass, pool, pso, Backend, Device, Instance, Submission, Surface,
+    Swapchain, SwapchainConfig,
 };
-use imgui::{ImGui, Context};
+use imgui::{Context, ImGui};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 //use hal::window::Surface;
 
-
 use imgui::*;
 //use hal::window::Backbuffer;
-
 
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 struct MouseState {
@@ -33,31 +31,29 @@ struct MouseState {
 
 fn main() {
     env_logger::init();
-  //  use gfx_hal::window::Surface;
+    //  use gfx_hal::window::Surface;
 
     let mut imgui = Context::create();
 
     let mut events_loop = winit::EventsLoop::new();
 
     let window = winit::Window::new(&events_loop).unwrap();
-    
-     let mut platform = WinitPlatform::init(&mut imgui); // step 1
+
+    let mut platform = WinitPlatform::init(&mut imgui); // step 1
     platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default); // step 2
-    
+
     let instance = back::Instance::create("imgui-gfx-hal", 1);
     let mut surface = instance.create_surface(&window);
-    
 
-    
-  //  let mut adapters = hal::instance::enumerate_adapters(&instance).into_iter();
-    
-let mut adapters = instance.enumerate_adapters().into_iter();
+    //  let mut adapters = hal::instance::enumerate_adapters(&instance).into_iter();
+
+    let mut adapters = instance.enumerate_adapters().into_iter();
 
     let (adapter, device, mut queue_group) = loop {
         let adapter = adapters.next().expect("No suitable adapter found");
-        match adapter.open_with::<_, gfx_hal::Graphics>(1, |family| {
-            surface.supports_queue_family(family)
-        }) {
+        match adapter
+            .open_with::<_, gfx_hal::Graphics>(1, |family| surface.supports_queue_family(family))
+        {
             Ok((device, queue_group)) => break (adapter, device, queue_group),
             Err(_) => (),
         }
@@ -65,10 +61,7 @@ let mut adapters = instance.enumerate_adapters().into_iter();
     let physical_device = &adapter.physical_device;
 
     let mut command_pool = unsafe {
-        device.create_command_pool_typed(
-            &queue_group,
-            pool::CommandPoolCreateFlags::empty(),
-        )
+        device.create_command_pool_typed(&queue_group, pool::CommandPoolCreateFlags::empty())
     }
     .unwrap();
 
@@ -138,11 +131,9 @@ let mut adapters = instance.enumerate_adapters().into_iter();
 
         let dependency = pass::SubpassDependency {
             passes: pass::SubpassRef::External..pass::SubpassRef::Pass(0),
-            stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-                ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+            stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
             accesses: image::Access::empty()
-                ..(image::Access::COLOR_ATTACHMENT_READ
-                    | image::Access::COLOR_ATTACHMENT_WRITE),
+                ..(image::Access::COLOR_ATTACHMENT_READ | image::Access::COLOR_ATTACHMENT_WRITE),
         };
 
         unsafe {
@@ -164,42 +155,48 @@ let mut adapters = instance.enumerate_adapters().into_iter();
     )
     .unwrap();
 
-    let (frame_images, framebuffers) : (std::vec::Vec<(<back::Backend as Backend>::Image,<back::Backend as Backend>::ImageView)>, Vec<<back::Backend as Backend>::Framebuffer>) = {
-            let extent = image::Extent {
-                width: extent.width as _,
-                height: extent.height as _,
-                depth: 1,
-            };
-      
-            let pairs = backbuffer
-                .into_iter()
-                .map(|image| unsafe {
-                    let rtv = device
-                        .create_image_view(
-                            &image,
-                            image::ViewKind::D2,
-                            format,
-                            format::Swizzle::NO,
-                            image::SubresourceRange {
-                                aspects: format::Aspects::COLOR,
-                                levels: 0..1,
-                                layers: 0..1,
-                            },
-                        )
-                        .unwrap();
-                    (image, rtv)
-                })
-                .collect::<Vec<_>>();
-            let fbos = pairs
-                .iter()
-                .map(|&(_, ref rtv)| unsafe {
-                    device
-                        .create_framebuffer(&render_pass, Some(rtv), extent)
-                        .unwrap()
-                })
-                .collect();
-            (pairs, fbos)
+    let (frame_images, framebuffers): (
+        std::vec::Vec<(
+            <back::Backend as Backend>::Image,
+            <back::Backend as Backend>::ImageView,
+        )>,
+        Vec<<back::Backend as Backend>::Framebuffer>,
+    ) = {
+        let extent = image::Extent {
+            width: extent.width as _,
+            height: extent.height as _,
+            depth: 1,
         };
+
+        let pairs = backbuffer
+            .into_iter()
+            .map(|image| unsafe {
+                let rtv = device
+                    .create_image_view(
+                        &image,
+                        image::ViewKind::D2,
+                        format,
+                        format::Swizzle::NO,
+                        image::SubresourceRange {
+                            aspects: format::Aspects::COLOR,
+                            levels: 0..1,
+                            layers: 0..1,
+                        },
+                    )
+                    .unwrap();
+                (image, rtv)
+            })
+            .collect::<Vec<_>>();
+        let fbos = pairs
+            .iter()
+            .map(|&(_, ref rtv)| unsafe {
+                device
+                    .create_framebuffer(&render_pass, Some(rtv), extent)
+                    .unwrap()
+            })
+            .collect();
+        (pairs, fbos)
+    };
 
     let viewport = pso::Viewport {
         rect: pso::Rect {
@@ -220,8 +217,7 @@ let mut adapters = instance.enumerate_adapters().into_iter();
     let mut opened = true;
     let mut mouse_state = MouseState::default();
 
-    let mut cmd_buffer =
-        command_pool.acquire_command_buffer::<command::OneShot>();
+    let mut cmd_buffer = command_pool.acquire_command_buffer::<command::OneShot>();
 
     while running {
         events_loop.poll_events(|event| {
@@ -259,15 +255,9 @@ let mut adapters = instance.enumerate_adapters().into_iter();
                             Some(Key::LControl) | Some(Key::RControl) => {
                                 imgui.set_key_ctrl(pressed)
                             }
-                            Some(Key::LShift) | Some(Key::RShift) => {
-                                imgui.set_key_shift(pressed)
-                            }
-                            Some(Key::LAlt) | Some(Key::RAlt) => {
-                                imgui.set_key_alt(pressed)
-                            }
-                            Some(Key::LWin) | Some(Key::RWin) => {
-                                imgui.set_key_super(pressed)
-                            }
+                            Some(Key::LShift) | Some(Key::RShift) => imgui.set_key_shift(pressed),
+                            Some(Key::LAlt) | Some(Key::RAlt) => imgui.set_key_alt(pressed),
+                            Some(Key::LWin) | Some(Key::RWin) => imgui.set_key_super(pressed),
                             _ => {}
                         }
                     }
@@ -276,15 +266,9 @@ let mut adapters = instance.enumerate_adapters().into_iter();
                         mouse_state.pos = (x, y);
                     }
                     MouseInput { state, button, .. } => match button {
-                        MouseButton::Left => {
-                            mouse_state.pressed.0 = state == Pressed
-                        }
-                        MouseButton::Right => {
-                            mouse_state.pressed.1 = state == Pressed
-                        }
-                        MouseButton::Middle => {
-                            mouse_state.pressed.2 = state == Pressed
-                        }
+                        MouseButton::Left => mouse_state.pressed.0 = state == Pressed,
+                        MouseButton::Right => mouse_state.pressed.1 = state == Pressed,
+                        MouseButton::Middle => mouse_state.pressed.2 = state == Pressed,
                         _ => {}
                     },
                     MouseWheel {
@@ -320,39 +304,34 @@ let mut adapters = instance.enumerate_adapters().into_iter();
 
         let now = Instant::now();
         let delta = now - last_frame;
-        let delta_s = delta.as_secs() as f32
-            + delta.subsec_nanos() as f32 / 1_000_000_000.0;
+        let delta_s = delta.as_secs() as f32 + delta.subsec_nanos() as f32 / 1_000_000_000.0;
         last_frame = now;
 
- 
-        
         let frame: hal::SwapImageIndex = unsafe {
-            match swap_chain
-                .acquire_image(!0, Some(&mut frame_semaphore), None)
-            {
+            match swap_chain.acquire_image(!0, Some(&mut frame_semaphore), None) {
                 Ok(i) => i.0,
                 Err(err) => panic!("problem: {:?}", err),
             }
         };
 
-   
         let ui = imgui.frame();
         ui.show_demo_window(&mut opened);
-        let texture_id = unsafe {
-            std::mem::transmute::<usize, TextureId>(0)
-        };
-        
-        
-        let w = Window::new(&ui,im_str!("Image Test"))
+        let texture_id = unsafe { std::mem::transmute::<usize, TextureId>(0) };
+
+        let w = Window::new(&ui, im_str!("Image Test"))
             .position([20.0, 20.0], Condition::Appearing)
             .size([700.0, 200.0], Condition::Appearing)
-              .build(|| {
+            .build(|| {
                 ui.text(im_str!("Hello world!"));
-                ui.image(texture_id, [100.0f32,100.0f32]).build();
+                ui.image(texture_id, [100.0f32, 100.0f32]).build();
                 ui.separator();
                 let mouse_pos = ui.io().mouse_pos;
-                ui.text(im_str!("Mouse Position: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
-        });
+                ui.text(im_str!(
+                    "Mouse Position: ({:.1},{:.1})",
+                    mouse_pos[0],
+                    mouse_pos[1]
+                ));
+            });
 
         unsafe {
             cmd_buffer.begin();
@@ -362,9 +341,9 @@ let mut adapters = instance.enumerate_adapters().into_iter();
                     &render_pass,
                     &framebuffers[frame as usize],
                     viewport.rect,
-                    &[command::ClearValue::Color(command::ClearColor::Sfloat(
-                        [0.2, 0.2, 0.2, 1.0],
-                    ))],
+                    &[command::ClearValue::Color(command::ClearColor::Sfloat([
+                        0.2, 0.2, 0.2, 1.0,
+                    ]))],
                 );
 
                 // Frame is always 0, since no double buffering.
@@ -377,19 +356,14 @@ let mut adapters = instance.enumerate_adapters().into_iter();
 
             let submission = Submission {
                 command_buffers: Some(&cmd_buffer),
-                wait_semaphores: Some((
-                    &frame_semaphore,
-                    PipelineStage::BOTTOM_OF_PIPE,
-                )),
+                wait_semaphores: Some((&frame_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
                 signal_semaphores: Some(&present_semaphore),
             };
             queue_group.queues[0].submit(submission, Some(&mut frame_fence));
 
-            if let Err(_) = swap_chain.present(
-                &mut queue_group.queues[0],
-                frame,
-                Some(&present_semaphore),
-            ) {
+            if let Err(_) =
+                swap_chain.present(&mut queue_group.queues[0], frame, Some(&present_semaphore))
+            {
                 panic!("problem presenting swapchain");
             }
 

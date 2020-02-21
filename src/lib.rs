@@ -13,13 +13,11 @@ use std::mem;
 use hal::memory::Properties;
 use hal::pso::{PipelineStage, Rect};
 use hal::{
-    buffer, command, device, format, image, memory, pass, pso, queue, Backend,
-    CommandQueue, DescriptorPool, Device, MemoryTypeId, PhysicalDevice,
-    Primitive,
+    buffer, command, device, format, image, memory, pass, pso, queue, Backend, CommandQueue,
+    DescriptorPool, Device, MemoryTypeId, PhysicalDevice, Primitive,
 };
-use imgui::{ImDrawIdx, ImDrawVert, ImGui, Ui};
 use imgui::{DrawCmd, DrawCmdParams, DrawData, ImString, TextureId, Textures};
-
+use imgui::{ImDrawIdx, ImDrawVert, ImGui, Ui};
 
 #[derive(Clone, Debug, Fail)]
 pub enum Error {
@@ -119,10 +117,10 @@ pub struct Renderer<B: Backend> {
     image_view: B::ImageView,
     descriptor_pool: B::DescriptorPool,
     descriptor_set_layout: B::DescriptorSetLayout,
-   // descriptor_set: B::DescriptorSet,
+    // descriptor_set: B::DescriptorSet,
     pipeline: B::GraphicsPipeline,
     pipeline_layout: B::PipelineLayout,
-    texture_sets : Vec<B::DescriptorSet>
+    texture_sets: Vec<B::DescriptorSet>,
 }
 
 impl<B: Backend> Buffers<B> {
@@ -142,14 +140,10 @@ impl<B: Backend> Buffers<B> {
             let inds_size = (num_inds * mem::size_of::<ImDrawIdx>()) as u64;
 
             // Create buffers.
-            let mut vertex_buffer =
-                device.create_buffer(verts_size, buffer::Usage::VERTEX)?;
-            let mut index_buffer =
-                device.create_buffer(inds_size, buffer::Usage::INDEX)?;
-            let vertex_requirements =
-                device.get_buffer_requirements(&vertex_buffer);
-            let index_requirements =
-                device.get_buffer_requirements(&index_buffer);
+            let mut vertex_buffer = device.create_buffer(verts_size, buffer::Usage::VERTEX)?;
+            let mut index_buffer = device.create_buffer(inds_size, buffer::Usage::INDEX)?;
+            let vertex_requirements = device.get_buffer_requirements(&vertex_buffer);
+            let index_requirements = device.get_buffer_requirements(&index_buffer);
             // The GPU size requirements may be larger than a simple
             // packed buffer.
             let verts_size = vertex_requirements.size;
@@ -165,8 +159,7 @@ impl<B: Backend> Buffers<B> {
             let size = index_offset + inds_size;
 
             // Find an applicable memory type.
-            let type_mask =
-                vertex_requirements.type_mask & index_requirements.type_mask;
+            let type_mask = vertex_requirements.type_mask & index_requirements.type_mask;
             let supported = |id| type_mask & (1u64 << id) != 0;
             let memory_type = match memory_type {
                 // The old memory type is still valid.
@@ -174,34 +167,23 @@ impl<B: Backend> Buffers<B> {
                 // There was either no cached type or it was no longer
                 // valid for the new buffers.
                 memory_type => {
-                    let memory_types =
-                        physical_device.memory_properties().memory_types;
+                    let memory_types = physical_device.memory_properties().memory_types;
 
                     let (ty, _) = memory_types
                         .iter()
                         .enumerate()
                         .find(|(id, mem)| {
-                            supported(*id)
-                                && mem
-                                    .properties
-                                    .contains(Properties::CPU_VISIBLE)
+                            supported(*id) && mem.properties.contains(Properties::CPU_VISIBLE)
                         })
-                        .ok_or(Error::CantFindMemoryType(
-                            "vertex/index buffers",
-                        ))?;
+                        .ok_or(Error::CantFindMemoryType("vertex/index buffers"))?;
                     *memory_type = Some(MemoryTypeId(ty));
                     ty
                 }
             };
             // Allocate and bind memory
-            let memory =
-                device.allocate_memory(MemoryTypeId(memory_type), size)?;
+            let memory = device.allocate_memory(MemoryTypeId(memory_type), size)?;
             device.bind_buffer_memory(&memory, 0, &mut vertex_buffer)?;
-            device.bind_buffer_memory(
-                &memory,
-                index_offset,
-                &mut index_buffer,
-            )?;
+            device.bind_buffer_memory(&memory, index_offset, &mut index_buffer)?;
 
             let mapped = device.map_memory(&memory, 0..size)?;
 
@@ -235,28 +217,18 @@ impl<B: Backend> Buffers<B> {
         assert!(self.num_inds >= inds.len() + index_offset);
         unsafe {
             // Copy vertex data.
-            let dest = self.mapped.offset(
-                (vertex_offset * mem::size_of::<ImDrawVert>()) as isize,
-            );
+            let dest = self
+                .mapped
+                .offset((vertex_offset * mem::size_of::<ImDrawVert>()) as isize);
             let src = &verts[0];
-            std::ptr::copy_nonoverlapping(
-                src,
-                dest as *mut ImDrawVert,
-                verts.len(),
-            );
+            std::ptr::copy_nonoverlapping(src, dest as *mut ImDrawVert, verts.len());
 
             // Copy index data.
             let dest = self.mapped.offset(
-                (self.index_offset as usize
-                    + index_offset * mem::size_of::<ImDrawIdx>())
-                    as isize,
+                (self.index_offset as usize + index_offset * mem::size_of::<ImDrawIdx>()) as isize,
             );
             let src = &inds[0];
-            std::ptr::copy_nonoverlapping(
-                src,
-                dest as *mut ImDrawIdx,
-                inds.len(),
-            );
+            std::ptr::copy_nonoverlapping(src, dest as *mut ImDrawIdx, inds.len());
         }
     }
 
@@ -281,46 +253,44 @@ impl<B: Backend> Buffers<B> {
 }
 
 impl<B: Backend> Renderer<B> {
-  
+    pub fn add_texture(
+        &mut self,
+        device: &B::Device,
+        sampler: &B::Sampler,
+        image_view: &B::ImageView,
+        image_layout: &hal::image::Layout,
+    ) -> TextureId {
+        let descriptor_set = unsafe {
+            self.descriptor_pool
+                .allocate_set(&self.descriptor_set_layout)
+                .expect("could not allocate ds set in add_texture")
+        };
 
-    pub fn add_texture(&mut self,device : &B::Device,sampler : &B::Sampler, image_view : &B::ImageView, image_layout : &hal::image::Layout) -> TextureId {
-            
-            let descriptor_set = unsafe { 
-                self.descriptor_pool.allocate_set(&self.descriptor_set_layout).expect("could not allocate ds set in add_texture")
-                };
-
-            {
-                let write = pso::DescriptorSetWrite {
-                    set: &descriptor_set,
-                    binding: 0,
-                    array_offset: 0,
-                    descriptors: &[pso::Descriptor::CombinedImageSampler(
-                        image_view,
-                        image::Layout::ShaderReadOnlyOptimal,
-                        sampler,
-                    )],
-                };
-                unsafe {
+        {
+            let write = pso::DescriptorSetWrite {
+                set: &descriptor_set,
+                binding: 0,
+                array_offset: 0,
+                descriptors: &[pso::Descriptor::CombinedImageSampler(
+                    image_view,
+                    image::Layout::ShaderReadOnlyOptimal,
+                    sampler,
+                )],
+            };
+            unsafe {
                 device.write_descriptor_sets(Some(write));
-                }
             }
-             
-             self.texture_sets.push(descriptor_set);
-             let index = self.texture_sets.len() - 1;
-        
-        
-        
-        
-        
-        unsafe {
-            std::mem::transmute::<usize,TextureId>(index)
         }
+
+        self.texture_sets.push(descriptor_set);
+        let index = self.texture_sets.len() - 1;
+
+        unsafe { std::mem::transmute::<usize, TextureId>(index) }
     }
-    
-    
+
     pub fn new<C>(
         //imgui: &mut ImGui,
-        ctx : &mut imgui::Context,
+        ctx: &mut imgui::Context,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
         render_pass: &B::RenderPass,
@@ -333,178 +303,156 @@ impl<B: Backend> Renderer<B> {
         C: queue::Capability + queue::Supports<queue::Transfer>,
     {
         // Fence and command buffer for all transfer operations
-        let mut transfer_cbuf =
-            command_pool.acquire_command_buffer::<command::OneShot>();
+        let mut transfer_cbuf = command_pool.acquire_command_buffer::<command::OneShot>();
         let transfer_fence = device.create_fence(false)?;
 
         // Determine memory types to use
         let memory_types = physical_device.memory_properties().memory_types;
 
-   
         let mut fonts = ctx.fonts();
         let handle = fonts.build_rgba32_texture();
         // Copy texture
-        let (image_memory, image, image_view, staging_memory, staging_buffer) =
-            unsafe { 
-                let size = u64::from(handle.width * handle.height * 4);
+        let (image_memory, image, image_view, staging_memory, staging_buffer) = unsafe {
+            let size = u64::from(handle.width * handle.height * 4);
 
-                // Create target image
-                let kind = image::Kind::D2(handle.width, handle.height, 1, 1);
-                let format = format::Format::Rgba8Unorm;
-                let mut image = device.create_image(
-                    kind,
-                    1,
-                    format,
-                    image::Tiling::Optimal,
-                    image::Usage::SAMPLED | image::Usage::TRANSFER_DST,
-                    image::ViewCapabilities::empty(),
-                )?;
-                let requirements = device.get_image_requirements(&image);
-                // Find valid memory type
-                let (memory_type, _) = memory_types
-                    .iter()
-                    .enumerate()
-                    .find(|(id, mem)| {
-                        let supported =
-                            requirements.type_mask & (1u64 << id) != 0;
-                        supported
-                            && mem.properties.contains(Properties::DEVICE_LOCAL)
-                    })
-                    .ok_or(Error::CantFindMemoryType("image"))?;
-                let image_memory =
-                    device.allocate_memory(MemoryTypeId(memory_type), size)?;
-                device.bind_image_memory(&image_memory, 0, &mut image)?;
+            // Create target image
+            let kind = image::Kind::D2(handle.width, handle.height, 1, 1);
+            let format = format::Format::Rgba8Unorm;
+            let mut image = device.create_image(
+                kind,
+                1,
+                format,
+                image::Tiling::Optimal,
+                image::Usage::SAMPLED | image::Usage::TRANSFER_DST,
+                image::ViewCapabilities::empty(),
+            )?;
+            let requirements = device.get_image_requirements(&image);
+            // Find valid memory type
+            let (memory_type, _) = memory_types
+                .iter()
+                .enumerate()
+                .find(|(id, mem)| {
+                    let supported = requirements.type_mask & (1u64 << id) != 0;
+                    supported && mem.properties.contains(Properties::DEVICE_LOCAL)
+                })
+                .ok_or(Error::CantFindMemoryType("image"))?;
+            let image_memory = device.allocate_memory(MemoryTypeId(memory_type), size)?;
+            device.bind_image_memory(&image_memory, 0, &mut image)?;
 
-                let subresource_range = image::SubresourceRange {
-                    aspects: format::Aspects::COLOR,
-                    levels: 0..1,
-                    layers: 0..1,
-                };
+            let subresource_range = image::SubresourceRange {
+                aspects: format::Aspects::COLOR,
+                levels: 0..1,
+                layers: 0..1,
+            };
 
-                let image_view = device.create_image_view(
-                    &image,
-                    image::ViewKind::D2,
-                    format,
-                    format::Swizzle::NO,
-                    subresource_range.clone(),
-                )?;
+            let image_view = device.create_image_view(
+                &image,
+                image::ViewKind::D2,
+                format,
+                format::Swizzle::NO,
+                subresource_range.clone(),
+            )?;
 
-                // Create staging buffer
-                let mut staging_buffer =
-                    device.create_buffer(size, buffer::Usage::TRANSFER_SRC)?;
-                let requirements =
-                    device.get_buffer_requirements(&staging_buffer);
-                let (memory_type, _) = memory_types
-                    .iter()
-                    .enumerate()
-                    .find(|(id, mem)| {
-                        let supported =
-                            requirements.type_mask & (1u64 << id) != 0;
-                        supported
-                            && mem.properties.contains(Properties::CPU_VISIBLE)
-                    })
-                    .ok_or(Error::CantFindMemoryType("image staging buffer"))?;
-                let staging_memory =
-                    device.allocate_memory(MemoryTypeId(memory_type), size)?;
-                device.bind_buffer_memory(
-                    &staging_memory,
-                    0,
-                    &mut staging_buffer,
-                )?;
+            // Create staging buffer
+            let mut staging_buffer = device.create_buffer(size, buffer::Usage::TRANSFER_SRC)?;
+            let requirements = device.get_buffer_requirements(&staging_buffer);
+            let (memory_type, _) = memory_types
+                .iter()
+                .enumerate()
+                .find(|(id, mem)| {
+                    let supported = requirements.type_mask & (1u64 << id) != 0;
+                    supported && mem.properties.contains(Properties::CPU_VISIBLE)
+                })
+                .ok_or(Error::CantFindMemoryType("image staging buffer"))?;
+            let staging_memory = device.allocate_memory(MemoryTypeId(memory_type), size)?;
+            device.bind_buffer_memory(&staging_memory, 0, &mut staging_buffer)?;
 
-                // Copy data into the mapped staging buffer
-                {
-                    let mut map = device
-                        .acquire_mapping_writer(&staging_memory, 0..size)?;
-                    map.clone_from_slice(handle.data);
-                    device.release_mapping_writer(map)?;
-                }
+            // Copy data into the mapped staging buffer
+            {
+                let mut map = device.acquire_mapping_writer(&staging_memory, 0..size)?;
+                map.clone_from_slice(handle.data);
+                device.release_mapping_writer(map)?;
+            }
 
-                {
-                    // Build a command buffer to copy data
-                    transfer_cbuf.begin();
+            {
+                // Build a command buffer to copy data
+                transfer_cbuf.begin();
 
-                    // Copy staging buffer to the image
-                    let image_barrier = memory::Barrier::Image {
-                        states: (
-                            image::Access::empty(),
-                            image::Layout::Undefined,
-                        )
-                            ..(
-                                image::Access::TRANSFER_WRITE,
-                                image::Layout::TransferDstOptimal,
-                            ),
-                        target: &image,
-                        families: None,
-                        range: subresource_range.clone(),
-                    };
-
-                    transfer_cbuf.pipeline_barrier(
-                        PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
-                        memory::Dependencies::empty(),
-                        &[image_barrier],
-                    );
-
-                    transfer_cbuf.copy_buffer_to_image(
-                        &staging_buffer,
-                        &image,
-                        image::Layout::TransferDstOptimal,
-                        &[command::BufferImageCopy {
-                            buffer_offset: 0,
-                            buffer_width: handle.width,
-                            buffer_height: handle.height,
-                            image_layers: image::SubresourceLayers {
-                                aspects: format::Aspects::COLOR,
-                                level: 0,
-                                layers: 0..1,
-                            },
-                            image_offset: image::Offset { x: 0, y: 0, z: 0 },
-                            image_extent: image::Extent {
-                                width: handle.width,
-                                height: handle.height,
-                                depth: 1,
-                            },
-                        }],
-                    );
-
-                    let image_barrier = memory::Barrier::Image {
-                        states: (
+                // Copy staging buffer to the image
+                let image_barrier = memory::Barrier::Image {
+                    states: (image::Access::empty(), image::Layout::Undefined)
+                        ..(
                             image::Access::TRANSFER_WRITE,
                             image::Layout::TransferDstOptimal,
-                        )
-                            ..(
-                                image::Access::SHADER_READ,
-                                image::Layout::ShaderReadOnlyOptimal,
-                            ),
-                        target: &image,
-                        // TODO: this probably should transfer to the
-                        // graphics queue
-                        families: None,
-                        range: subresource_range.clone(),
-                    };
-                    transfer_cbuf.pipeline_barrier(
-                        PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
-                        memory::Dependencies::empty(),
-                        &[image_barrier],
-                    );
+                        ),
+                    target: &image,
+                    families: None,
+                    range: subresource_range.clone(),
+                };
 
-                    transfer_cbuf.finish();
+                transfer_cbuf.pipeline_barrier(
+                    PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
+                    memory::Dependencies::empty(),
+                    &[image_barrier],
+                );
 
-                    // Submit to the queue
-                    queue.submit_without_semaphores(
-                        Some(&transfer_cbuf),
-                        Some(&transfer_fence),
-                    );
-                }
+                transfer_cbuf.copy_buffer_to_image(
+                    &staging_buffer,
+                    &image,
+                    image::Layout::TransferDstOptimal,
+                    &[command::BufferImageCopy {
+                        buffer_offset: 0,
+                        buffer_width: handle.width,
+                        buffer_height: handle.height,
+                        image_layers: image::SubresourceLayers {
+                            aspects: format::Aspects::COLOR,
+                            level: 0,
+                            layers: 0..1,
+                        },
+                        image_offset: image::Offset { x: 0, y: 0, z: 0 },
+                        image_extent: image::Extent {
+                            width: handle.width,
+                            height: handle.height,
+                            depth: 1,
+                        },
+                    }],
+                );
 
-                (
-                    image_memory,
-                    image,
-                    image_view,
-                    staging_memory,
-                    staging_buffer,
-                )
-            };
+                let image_barrier = memory::Barrier::Image {
+                    states: (
+                        image::Access::TRANSFER_WRITE,
+                        image::Layout::TransferDstOptimal,
+                    )
+                        ..(
+                            image::Access::SHADER_READ,
+                            image::Layout::ShaderReadOnlyOptimal,
+                        ),
+                    target: &image,
+                    // TODO: this probably should transfer to the
+                    // graphics queue
+                    families: None,
+                    range: subresource_range.clone(),
+                };
+                transfer_cbuf.pipeline_barrier(
+                    PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+                    memory::Dependencies::empty(),
+                    &[image_barrier],
+                );
+
+                transfer_cbuf.finish();
+
+                // Submit to the queue
+                queue.submit_without_semaphores(Some(&transfer_cbuf), Some(&transfer_fence));
+            }
+
+            (
+                image_memory,
+                image,
+                image_view,
+                staging_memory,
+                staging_buffer,
+            )
+        };
 
         unsafe {
             // Create font sampler
@@ -531,11 +479,10 @@ impl<B: Backend> Renderer<B> {
                     ty: pso::DescriptorType::CombinedImageSampler,
                     count: 100,
                 }],
-                 pso::DescriptorPoolCreateFlags::empty()
+                pso::DescriptorPoolCreateFlags::empty(),
             )?;
 
-            let descriptor_set =
-                descriptor_pool.allocate_set(&descriptor_set_layout)?;
+            let descriptor_set = descriptor_pool.allocate_set(&descriptor_set_layout)?;
 
             {
                 let write = pso::DescriptorSetWrite {
@@ -560,15 +507,17 @@ impl<B: Backend> Renderer<B> {
 
             // Create shaders
             let vs_module = {
-               // let spirv = include_bytes!("../shaders/ui.vert.spirv");
-                let file = std::fs::File::open("shaders/ui.vert.spirv").expect("could not open vertex shader");
-                 let spirv: Vec<u32> = hal::read_spirv(file).unwrap();
-               
+                // let spirv = include_bytes!("../shaders/ui.vert.spirv");
+                let file = std::fs::File::open("shaders/ui.vert.spirv")
+                    .expect("could not open vertex shader");
+                let spirv: Vec<u32> = hal::read_spirv(file).unwrap();
+
                 device.create_shader_module(&spirv[..])?
             };
             let fs_module = {
-                let file = std::fs::File::open("shaders/ui.frag.spirv").expect("could not open fragment shader");
-              //  let spirv = include_bytes!("../shaders/ui.frag.spirv");
+                let file = std::fs::File::open("shaders/ui.frag.spirv")
+                    .expect("could not open fragment shader");
+                //  let spirv = include_bytes!("../shaders/ui.frag.spirv");
                 let spirv: Vec<u32> = hal::read_spirv(file).unwrap();
                 device.create_shader_module(&spirv[..])?
             };
@@ -613,8 +562,8 @@ impl<B: Backend> Renderer<B> {
 
                 // Enable blending
                 pipeline_desc.blender.targets.push(pso::ColorBlendDesc {
-                    mask : pso::ColorMask::ALL,
-                    blend : Some(pso::BlendState::ALPHA),
+                    mask: pso::ColorMask::ALL,
+                    blend: Some(pso::BlendState::ALPHA),
                 });
 
                 // Set up vertex buffer
@@ -680,7 +629,8 @@ impl<B: Backend> Renderer<B> {
                 descriptor_pool,
                 descriptor_set_layout,
                 pipeline,
-                pipeline_layout, texture_sets : vec![descriptor_set]
+                pipeline_layout,
+                texture_sets: vec![descriptor_set],
             })
         }
     }
@@ -717,9 +667,7 @@ impl<B: Backend> Renderer<B> {
                 device,
                 physical_device,
             )?;
-            if let Some(old) =
-                mem::replace(&mut self.buffers[frame], Some(buffers))
-            {
+            if let Some(old) = mem::replace(&mut self.buffers[frame], Some(buffers)) {
                 old.destroy(device);
             }
         }
@@ -730,13 +678,9 @@ impl<B: Backend> Renderer<B> {
         unsafe {
             // Bind pipeline
             pass.bind_graphics_pipeline(&self.pipeline);
-       
 
             // Bind vertex and index buffers
-            pass.bind_vertex_buffers(
-                0,
-                iter::once((&buffers.vertex_buffer, 0)),
-            );
+            pass.bind_vertex_buffers(0, iter::once((&buffers.vertex_buffer, 0)));
             pass.bind_index_buffer(buffer::IndexBufferView {
                 buffer: &buffers.index_buffer,
                 offset: 0,
@@ -786,55 +730,48 @@ impl<B: Backend> Renderer<B> {
                 );
 
                 for cmd in list.commands() {
-                        match cmd {
-                    DrawCmd::Elements {
-                        count,
-                        cmd_params:
-                            DrawCmdParams {
-                                clip_rect,
-                                texture_id,
-                                ..
-                            },
-                    } => {
-                    //Calculate the scissor
-                    let scissor = Rect {
-                        x: clip_rect[0] as i16,
-                        y: clip_rect[1] as i16,
-                        w: (clip_rect[2] - clip_rect[0]) as i16,
-                        h: (clip_rect[3] - clip_rect[1]) as i16,
-                    };
-                    pass.set_scissors(0, &[scissor]);
+                    match cmd {
+                        DrawCmd::Elements {
+                            count,
+                            cmd_params:
+                                DrawCmdParams {
+                                    clip_rect,
+                                    texture_id,
+                                    ..
+                                },
+                        } => {
+                            //Calculate the scissor
+                            let scissor = Rect {
+                                x: clip_rect[0] as i16,
+                                y: clip_rect[1] as i16,
+                                w: (clip_rect[2] - clip_rect[0]) as i16,
+                                h: (clip_rect[3] - clip_rect[1]) as i16,
+                            };
+                            pass.set_scissors(0, &[scissor]);
 
-                    
-                 
-                
-                  let texture_index = texture_id.id();
-                  
-                  
-                     pass.bind_graphics_descriptor_sets(
-                &self.pipeline_layout,
-                0,
-                Some(&self.texture_sets[texture_index]),
-                None as Option<u32>,
-            );
-                
+                            let texture_index = texture_id.id();
 
-                    // Actually draw things
-                    pass.draw_indexed(
-                        index_offset as u32
-                            ..index_offset as u32 + count as u32,
-                        vertex_offset as i32,
-                        0..1,
-                    );
+                            pass.bind_graphics_descriptor_sets(
+                                &self.pipeline_layout,
+                                0,
+                                Some(&self.texture_sets[texture_index]),
+                                None as Option<u32>,
+                            );
 
-                    index_offset += count as usize;
+                            // Actually draw things
+                            pass.draw_indexed(
+                                index_offset as u32..index_offset as u32 + count as u32,
+                                vertex_offset as i32,
+                                0..1,
+                            );
+
+                            index_offset += count as usize;
+                        }
+                        DrawCmd::ResetRenderState => (), // TODO
+                        DrawCmd::RawCallback { callback, raw_cmd } => unsafe {
+                            //(callback(draw_list.raw(), raw_cmd)
+                        },
                     }
-                    DrawCmd::ResetRenderState => (), // TODO
-                    DrawCmd::RawCallback { callback, raw_cmd } => unsafe {
-                        //(callback(draw_list.raw(), raw_cmd)
-                    },
-                }
-                
                 }
 
                 // Increment offsets
@@ -856,18 +793,10 @@ impl<B: Backend> Renderer<B> {
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
-       
-       let draw_data = ui.render();
-       
-     
-            self.draw(
-                &draw_data,
-                frame,
-                render_pass,
-                device,
-                physical_device,
-            );
-    
+        let draw_data = ui.render();
+
+        self.draw(&draw_data, frame, render_pass, device, physical_device);
+
         Ok(())
     }
 
