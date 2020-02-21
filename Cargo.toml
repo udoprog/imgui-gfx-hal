@@ -2,7 +2,7 @@
 name = "imgui-gfx-hal"
 version = "0.1.1"
 authors = ["Benjamin <benjamin.fik.lee@gmail.com>", "Clemens <kollapsderwellenfunktion@gmail.com>"]
-homepaige = "https://git.chronicembetterment.org/benjamin/imgui-gfx-hal"
+homepage = "https://github.com/udoprog/imgui-gfx-hal"
 description = "An imgui renderer backend for gfx-hal"
 readme = "README.md"
 license = "Unlicense/MIT"
