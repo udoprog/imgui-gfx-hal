@@ -10,7 +10,7 @@ license = "Unlicense/MIT"
 [dependencies]
 failure = "0.1"
 memoffset = "0.2"
-gfx-hal = "0.2.1"
+gfx-hal = "0.3.0"
 imgui = "0.1.0"
 
 [dev-dependencies]
