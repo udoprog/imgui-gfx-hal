@@ -6,16 +6,17 @@ homepage = "https://github.com/udoprog/imgui-gfx-hal"
 description = "An imgui renderer backend for gfx-hal"
 readme = "README.md"
 license = "Unlicense/MIT"
+edition = "2018"
 
 [dependencies]
-failure = "0.1"
-memoffset = "0.2"
-gfx-hal = "0.3.0"
-imgui = "0.1.0"
+thiserror = "1.0.0"
+anyhow = "1.0.26"
+memoffset = "0.5.3"
+hal = {version = "0.4.1", package = "gfx-hal"}
+imgui = "0.3.0"
 
 [dev-dependencies]
-gfx-backend-vulkan = "0.2.3"
+back = {version = "0.4.2", package = "gfx-backend-vulkan"}
 env_logger = "0.6"
-winit = "0.19.2"
-imgui-winit-support = "0.1"
-
+winit = "0.21.0"
+imgui-winit-support = "0.3.0"

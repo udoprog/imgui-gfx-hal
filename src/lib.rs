@@ -1,64 +1,51 @@
 // TODO: make sure all this unsafe is actually okay
-extern crate gfx_hal as hal;
-extern crate imgui;
-#[macro_use]
-extern crate failure;
-#[macro_use]
-extern crate memoffset;
-
-use std::borrow::BorrowMut;
-use std::iter;
-use std::mem;
+use std::{fs, iter, mem, slice};
 
 use hal::memory::Properties;
+use hal::prelude::*;
 use hal::pso::{PipelineStage, Rect};
-use hal::{
-    buffer, command, device, format, image, memory, pass, pso, queue, Backend, CommandQueue,
-    DescriptorPool, Device, MemoryTypeId, PhysicalDevice, Primitive,
-};
-use imgui::{DrawCmd, DrawCmdParams, DrawData, ImString, TextureId, Textures};
-use imgui::{ImDrawIdx, ImDrawVert, ImGui, Ui};
+use hal::{buffer, command, device, format, image, memory, pass, pso, MemoryTypeId};
+use imgui::{DrawCmd, DrawCmdParams, DrawData, DrawIdx, DrawVert, TextureId, Ui};
+use memoffset::offset_of;
+use thiserror::Error;
 
-#[derive(Clone, Debug, Fail)]
+#[derive(Clone, Debug, Error)]
 pub enum Error {
-    #[fail(display = "can't find valid memory type for {}", _0)]
+    #[error("can't create graphics pipeline: {0}")]
+    PsoCreationError(pso::CreationError),
+
+    #[error("can't map the specified device")]
+    MapError(#[source] device::MapError),
+
+    #[error("can't find valid memory type for {}", _0)]
     CantFindMemoryType(&'static str),
 
-    #[fail(display = "buffer creation error")]
-    BufferCreationError(#[cause] buffer::CreationError),
+    #[error("buffer creation error")]
+    BufferCreationError(#[source] buffer::CreationError),
 
-    #[fail(display = "image creation error")]
-    ImageCreationError(#[cause] image::CreationError),
+    #[error("image creation error")]
+    ImageCreationError(#[source] image::CreationError),
 
-    #[fail(display = "bind error")]
-    BindError(#[cause] device::BindError),
+    #[error("bind error")]
+    BindError(#[source] device::BindError),
 
-    #[fail(display = "image view error")]
-    ImageViewError(#[cause] image::ViewError),
+    #[error("image view error")]
+    ImageViewError(#[source] image::ViewError),
 
-    #[fail(display = "execution error")]
-    ExecutionError(#[cause] hal::error::HostExecutionError),
+    #[error("pipeline allocation error")]
+    PipelineAllocationError(#[source] pso::AllocationError),
 
-    #[fail(display = "pipeline allocation error")]
-    PipelineAllocationError(#[cause] pso::AllocationError),
+    #[error("allocation error")]
+    AllocationError(#[source] hal::device::AllocationError),
 
-    #[fail(display = "allocation error")]
-    AllocationError(#[cause] hal::device::AllocationError),
+    #[error("out of memory")]
+    OutOfMemoryError(#[source] hal::device::OutOfMemory),
 
-    #[fail(display = "out of memory")]
-    OutOfMemoryError(#[cause] hal::device::OutOfMemory),
+    #[error("device lost")]
+    DeviceLostError(#[source] hal::device::DeviceLost),
 
-    #[fail(display = "pipeline creation error")]
-    PipelineCreationError(#[cause] pso::CreationError),
-
-    #[fail(display = "mapping error")]
-    MappingError(#[cause] hal::mapping::Error),
-
-    #[fail(display = "device lost")]
-    DeviceLostError(#[cause] hal::device::DeviceLost),
-
-    // ShaderError doesn't implement Fail, for some reason
-    #[fail(display = "shader error: {:?}", _0)]
+    // ShaderError doesn't implement error, for some reason
+    #[error("shader error: {:?}", _0)]
     ShaderError(device::ShaderError),
 }
 
@@ -72,25 +59,24 @@ macro_rules! impl_from {
     };
 }
 
+impl_from!(Error, pso::CreationError, Error::PsoCreationError);
+impl_from!(Error, device::MapError, Error::MapError);
 impl_from!(Error, image::ViewError, Error::ImageViewError);
 impl_from!(Error, buffer::CreationError, Error::BufferCreationError);
 impl_from!(Error, image::CreationError, Error::ImageCreationError);
 impl_from!(Error, device::BindError, Error::BindError);
-impl_from!(Error, hal::error::HostExecutionError, Error::ExecutionError);
 impl_from!(Error, pso::AllocationError, Error::PipelineAllocationError);
 impl_from!(Error, hal::device::AllocationError, Error::AllocationError);
 impl_from!(Error, hal::device::OutOfMemory, Error::OutOfMemoryError);
-impl_from!(Error, pso::CreationError, Error::PipelineCreationError);
 impl_from!(Error, device::ShaderError, Error::ShaderError);
-impl_from!(Error, hal::mapping::Error, Error::MappingError);
 
-// TODO am I actually using failure correctly?
 impl From<hal::device::OomOrDeviceLost> for Error {
     fn from(err: hal::device::OomOrDeviceLost) -> Error {
-        use hal::device::OomOrDeviceLost::*;
+        use hal::device::OomOrDeviceLost;
+
         match err {
-            OutOfMemory(err) => Error::OutOfMemoryError(err),
-            DeviceLost(err) => Error::DeviceLostError(err),
+            OomOrDeviceLost::OutOfMemory(err) => Error::OutOfMemoryError(err),
+            OomOrDeviceLost::DeviceLost(err) => Error::DeviceLostError(err),
         }
     }
 }
@@ -98,7 +84,7 @@ impl From<hal::device::OomOrDeviceLost> for Error {
 // TODO: using a separate memory allocation for each frame's buffer
 // set is not great. The main issue with sharing memory for both frames is that
 // the old memory can't be freed until both frames are complete.
-pub struct Buffers<B: Backend> {
+pub struct Buffers<B: hal::Backend> {
     memory: B::Memory,
     mapped: *mut u8,
     vertex_buffer: B::Buffer,
@@ -108,7 +94,7 @@ pub struct Buffers<B: Backend> {
     num_inds: usize,
 }
 
-pub struct Renderer<B: Backend> {
+pub struct Renderer<B: hal::Backend> {
     sampler: B::Sampler,
     image_memory: B::Memory,
     memory_type_buffers: Option<MemoryTypeId>,
@@ -123,7 +109,7 @@ pub struct Renderer<B: Backend> {
     texture_sets: Vec<B::DescriptorSet>,
 }
 
-impl<B: Backend> Buffers<B> {
+impl<B: hal::Backend> Buffers<B> {
     /// Allocates a new pair of vertex and index buffers
     fn new(
         memory_type: &mut Option<MemoryTypeId>,
@@ -136,8 +122,8 @@ impl<B: Backend> Buffers<B> {
             // Calculate required size for each buffer. Note that total
             // size cannot be calculated because of alignment between the
             // buffers.
-            let verts_size = (num_verts * mem::size_of::<ImDrawVert>()) as u64;
-            let inds_size = (num_inds * mem::size_of::<ImDrawIdx>()) as u64;
+            let verts_size = (num_verts * mem::size_of::<DrawVert>()) as u64;
+            let inds_size = (num_inds * mem::size_of::<DrawIdx>()) as u64;
 
             // Create buffers.
             let mut vertex_buffer = device.create_buffer(verts_size, buffer::Usage::VERTEX)?;
@@ -208,8 +194,8 @@ impl<B: Backend> Buffers<B> {
     /// Copies vertex and index data into the buffers.
     fn update(
         &mut self,
-        verts: &[ImDrawVert],
-        inds: &[ImDrawIdx],
+        verts: &[DrawVert],
+        inds: &[DrawIdx],
         vertex_offset: usize,
         index_offset: usize,
     ) {
@@ -219,27 +205,27 @@ impl<B: Backend> Buffers<B> {
             // Copy vertex data.
             let dest = self
                 .mapped
-                .offset((vertex_offset * mem::size_of::<ImDrawVert>()) as isize);
+                .offset((vertex_offset * mem::size_of::<DrawVert>()) as isize);
             let src = &verts[0];
-            std::ptr::copy_nonoverlapping(src, dest as *mut ImDrawVert, verts.len());
+            std::ptr::copy_nonoverlapping(src, dest as *mut DrawVert, verts.len());
 
             // Copy index data.
             let dest = self.mapped.offset(
-                (self.index_offset as usize + index_offset * mem::size_of::<ImDrawIdx>()) as isize,
+                (self.index_offset as usize + index_offset * mem::size_of::<DrawIdx>()) as isize,
             );
             let src = &inds[0];
-            std::ptr::copy_nonoverlapping(src, dest as *mut ImDrawIdx, inds.len());
+            std::ptr::copy_nonoverlapping(src, dest as *mut DrawIdx, inds.len());
         }
     }
 
     /// Destroys the buffer
-    fn destroy(self, device: &B::Device) {
-        unsafe {
-            device.unmap_memory(&self.memory);
-            device.destroy_buffer(self.vertex_buffer);
-            device.destroy_buffer(self.index_buffer);
-            device.free_memory(self.memory);
-        }
+    unsafe fn destroy(&self, device: &B::Device) {
+        use std::ptr;
+
+        device.unmap_memory(&self.memory);
+        device.destroy_buffer(ptr::read(&self.vertex_buffer));
+        device.destroy_buffer(ptr::read(&self.index_buffer));
+        device.free_memory(ptr::read(&self.memory));
     }
 
     /// Flush memory changes to syncrhonize.
@@ -252,13 +238,13 @@ impl<B: Backend> Buffers<B> {
     }
 }
 
-impl<B: Backend> Renderer<B> {
+impl<B: hal::Backend> Renderer<B> {
     pub fn add_texture(
         &mut self,
         device: &B::Device,
         sampler: &B::Sampler,
         image_view: &B::ImageView,
-        image_layout: &hal::image::Layout,
+        _image_layout: &hal::image::Layout,
     ) -> TextureId {
         let descriptor_set = unsafe {
             self.descriptor_pool
@@ -288,7 +274,7 @@ impl<B: Backend> Renderer<B> {
         unsafe { std::mem::transmute::<usize, TextureId>(index) }
     }
 
-    pub fn new<C>(
+    pub fn new(
         //imgui: &mut ImGui,
         ctx: &mut imgui::Context,
         device: &B::Device,
@@ -296,14 +282,12 @@ impl<B: Backend> Renderer<B> {
         render_pass: &B::RenderPass,
         subpass_index: usize,
         max_frames: usize,
-        command_pool: &mut hal::CommandPool<B, C>,
-        queue: &mut CommandQueue<B, C>,
-    ) -> Result<Renderer<B>, Error>
-    where
-        C: queue::Capability + queue::Supports<queue::Transfer>,
-    {
+        command_pool: &mut B::CommandPool,
+        queue: &mut B::CommandQueue,
+    ) -> Result<Renderer<B>, Error> {
         // Fence and command buffer for all transfer operations
-        let mut transfer_cbuf = command_pool.acquire_command_buffer::<command::OneShot>();
+        let mut transfer_cbuf = unsafe { command_pool.allocate_one(command::Level::Primary) };
+
         let transfer_fence = device.create_fence(false)?;
 
         // Determine memory types to use
@@ -369,14 +353,13 @@ impl<B: Backend> Renderer<B> {
 
             // Copy data into the mapped staging buffer
             {
-                let mut map = device.acquire_mapping_writer(&staging_memory, 0..size)?;
-                map.clone_from_slice(handle.data);
-                device.release_mapping_writer(map)?;
+                let map = device.map_memory(&staging_memory, 0..size)?;
+                slice::from_raw_parts_mut(map, size as usize).clone_from_slice(handle.data);
             }
 
             {
                 // Build a command buffer to copy data
-                transfer_cbuf.begin();
+                transfer_cbuf.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
                 // Copy staging buffer to the image
                 let image_barrier = memory::Barrier::Image {
@@ -456,7 +439,7 @@ impl<B: Backend> Renderer<B> {
 
         unsafe {
             // Create font sampler
-            let sampler = device.create_sampler(image::SamplerInfo::new(
+            let sampler = device.create_sampler(&image::SamplerDesc::new(
                 image::Filter::Linear,
                 image::WrapMode::Clamp,
             ))?;
@@ -508,17 +491,17 @@ impl<B: Backend> Renderer<B> {
             // Create shaders
             let vs_module = {
                 // let spirv = include_bytes!("../shaders/ui.vert.spirv");
-                let file = std::fs::File::open("shaders/ui.vert.spirv")
-                    .expect("could not open vertex shader");
-                let spirv: Vec<u32> = hal::read_spirv(file).unwrap();
+                let file =
+                    fs::File::open("shaders/ui.vert.spirv").expect("could not open vertex shader");
+                let spirv: Vec<u32> = hal::pso::read_spirv(file).unwrap();
 
                 device.create_shader_module(&spirv[..])?
             };
             let fs_module = {
-                let file = std::fs::File::open("shaders/ui.frag.spirv")
+                let file = fs::File::open("shaders/ui.frag.spirv")
                     .expect("could not open fragment shader");
                 //  let spirv = include_bytes!("../shaders/ui.frag.spirv");
-                let spirv: Vec<u32> = hal::read_spirv(file).unwrap();
+                let spirv: Vec<u32> = hal::pso::read_spirv(file).unwrap();
                 device.create_shader_module(&spirv[..])?
             };
 
@@ -551,7 +534,7 @@ impl<B: Backend> Renderer<B> {
 
                 let mut pipeline_desc = pso::GraphicsPipelineDesc::new(
                     shader_entries,
-                    Primitive::TriangleList,
+                    pso::Primitive::TriangleList,
                     pso::Rasterizer {
                         cull_face: pso::Face::NONE,
                         ..pso::Rasterizer::FILL
@@ -569,7 +552,7 @@ impl<B: Backend> Renderer<B> {
                 // Set up vertex buffer
                 pipeline_desc.vertex_buffers.push(pso::VertexBufferDesc {
                     binding: 0,
-                    stride: mem::size_of::<ImDrawVert>() as u32,
+                    stride: mem::size_of::<DrawVert>() as u32,
                     rate: hal::pso::VertexInputRate::Vertex,
                 });
 
@@ -580,7 +563,7 @@ impl<B: Backend> Renderer<B> {
                     binding: 0,
                     element: pso::Element {
                         format: format::Format::Rg32Sfloat,
-                        offset: offset_of!(ImDrawVert, pos) as u32,
+                        offset: offset_of!(DrawVert, pos) as u32,
                     },
                 });
                 // UV
@@ -589,7 +572,7 @@ impl<B: Backend> Renderer<B> {
                     binding: 0,
                     element: pso::Element {
                         format: format::Format::Rg32Sfloat,
-                        offset: offset_of!(ImDrawVert, uv) as u32,
+                        offset: offset_of!(DrawVert, uv) as u32,
                     },
                 });
                 // Color
@@ -598,7 +581,7 @@ impl<B: Backend> Renderer<B> {
                     binding: 0,
                     element: pso::Element {
                         format: format::Format::Rgba8Unorm,
-                        offset: offset_of!(ImDrawVert, col) as u32,
+                        offset: offset_of!(DrawVert, col) as u32,
                     },
                 });
 
@@ -635,11 +618,11 @@ impl<B: Backend> Renderer<B> {
         }
     }
 
-    fn draw<C: BorrowMut<B::CommandBuffer>>(
+    fn draw(
         &mut self,
         draw_data: &DrawData,
         frame: usize,
-        pass: &mut command::RenderSubpassCommon<B, C>,
+        pass: &mut B::CommandBuffer,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
@@ -668,7 +651,9 @@ impl<B: Backend> Renderer<B> {
                 physical_device,
             )?;
             if let Some(old) = mem::replace(&mut self.buffers[frame], Some(buffers)) {
-                old.destroy(device);
+                unsafe {
+                    old.destroy(device);
+                }
             }
         }
         let buffers = self.buffers[frame].as_mut().unwrap();
@@ -711,7 +696,7 @@ impl<B: Backend> Renderer<B> {
                 -1.0,
             ];
             // yikes
-            let push_constants: [u32; 4] = std::mem::transmute(push_constants);
+            let push_constants: [u32; 4] = mem::transmute(push_constants);
             pass.push_graphics_constants(
                 &self.pipeline_layout,
                 pso::ShaderStageFlags::VERTEX,
@@ -768,9 +753,12 @@ impl<B: Backend> Renderer<B> {
                             index_offset += count as usize;
                         }
                         DrawCmd::ResetRenderState => (), // TODO
-                        DrawCmd::RawCallback { callback, raw_cmd } => unsafe {
+                        DrawCmd::RawCallback {
+                            callback: _,
+                            raw_cmd: _,
+                        } => {
                             //(callback(draw_list.raw(), raw_cmd)
-                        },
+                        }
                     }
                 }
 
@@ -779,40 +767,39 @@ impl<B: Backend> Renderer<B> {
             }
 
             buffers.flush(device)?;
-
             Ok(())
         }
     }
 
     /// Renders a frame.
-    pub fn render<C: BorrowMut<B::CommandBuffer>>(
+    pub fn render(
         &mut self,
         ui: Ui,
         frame: usize,
-        render_pass: &mut command::RenderSubpassCommon<B, C>,
+        render_pass: &mut B::CommandBuffer,
         device: &B::Device,
         physical_device: &B::PhysicalDevice,
     ) -> Result<(), Error> {
         let draw_data = ui.render();
-
-        self.draw(&draw_data, frame, render_pass, device, physical_device);
-
+        self.draw(&draw_data, frame, render_pass, device, physical_device)?;
         Ok(())
     }
 
     /// Destroys all used objects.
-    pub fn destroy(mut self, device: &B::Device) {
+    pub fn destroy(&mut self, device: &B::Device) {
+        use std::ptr;
+
         unsafe {
-            device.destroy_image(self.image);
-            device.free_memory(self.image_memory);
-            device.destroy_image_view(self.image_view);
-            device.destroy_sampler(self.sampler);
+            device.destroy_image(ptr::read(&self.image));
+            device.free_memory(ptr::read(&self.image_memory));
+            device.destroy_image_view(ptr::read(&self.image_view));
+            device.destroy_sampler(ptr::read(&self.sampler));
             self.descriptor_pool.reset();
-            device.destroy_descriptor_pool(self.descriptor_pool);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout);
-            device.destroy_graphics_pipeline(self.pipeline);
-            device.destroy_pipeline_layout(self.pipeline_layout);
-            for buffers in self.buffers.into_iter() {
+            device.destroy_descriptor_pool(ptr::read(&self.descriptor_pool));
+            device.destroy_descriptor_set_layout(ptr::read(&self.descriptor_set_layout));
+            device.destroy_graphics_pipeline(ptr::read(&self.pipeline));
+            device.destroy_pipeline_layout(ptr::read(&self.pipeline_layout));
+            for buffers in self.buffers.drain(..) {
                 buffers.map(|buffers| buffers.destroy(device));
             }
         }
